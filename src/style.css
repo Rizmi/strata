@@ -3380,20 +3380,21 @@ colorchooser colorswatch overlay {
 }
 
 .row-checkbox {
-  margin-left: 4px;
+  margin-left: 0;
   margin-right: 2px;
   min-height: 16px;
   min-width: 16px;
+  padding: 0;
 }
 
+/* Match the list row's eight-pixel inset and four-pixel Name cell padding. */
 .select-all-checkbox {
-  margin-left: 4px;
-  margin-right: 2px;
+  margin-left: 12px;
 }
 
 .row-checkbox check {
   background: @theme_muted;
-  border: 1px solid alpha(@theme_border, 0.72);
+  border: 1px solid alpha(@theme_border, 0.82);
   border-radius: 4px;
   box-shadow: none;
   min-height: 14px;
@@ -3401,16 +3402,27 @@ colorchooser colorswatch overlay {
   transition: background 160ms ease-out, border-color 160ms ease-out;
 }
 
-.row-checkbox check:checked {
+.row-checkbox:hover check {
+  background: alpha(@theme_accent, 0.14);
+  border-color: alpha(@theme_accent, 0.72);
+}
+
+.row-checkbox:focus-visible check {
+  outline: 2px solid @theme_accent;
+  outline-offset: 2px;
+}
+
+.row-checkbox check:checked,
+.row-checkbox check:indeterminate,
+.row-checkbox:hover check:checked,
+.row-checkbox:hover check:indeterminate {
   background: @theme_accent;
   border-color: @theme_accent;
   color: @theme_bg;
 }
 
-.row-checkbox check:indeterminate {
-  background: alpha(@theme_accent, 0.5);
-  border-color: @theme_accent;
-  color: @theme_text;
+.row-checkbox:disabled check {
+  opacity: 0.45;
 }
 
 .icons-card {

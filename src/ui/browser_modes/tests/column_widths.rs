@@ -46,15 +46,10 @@ fn resizing_starts_at_the_visible_header_not_the_loading_placeholder() {
                 window.present();
                 settle();
                 let mut heading = headings.first_child();
-                if let Some(widget) = heading.as_ref()
-                    && widget.has_css_class("select-all-checkbox")
-                {
-                    heading = widget.next_sibling();
-                }
                 for index in 0..LIST_COLUMN_WIDTHS.len() {
                     let cell = heading.expect("heading cell");
                     heading = cell.next_sibling();
-                    let overlay = cell.first_child().expect("heading overlay");
+                    let overlay = cell.last_child().expect("heading overlay");
                     let handle = overlay.last_child().expect("resize handle");
                     let controllers = handle.observe_controllers();
                     let drag = (0..controllers.n_items())
@@ -103,12 +98,13 @@ fn mode_fits_default_width_and_remains_resizable() {
                 for density in ["density-compact", "density-airy"] {
                     for width in [480, 1000] {
                         let columns = ListColumnLayout::new();
-                        let (headings, _, _, _) = list_headings(
+                        let (headings, _, select_all, _) = list_headings(
                             &browser,
                             0,
                             columns.clone(),
                             gtk::MultiSelection::new(Some(gtk::StringList::new(&[]))),
                         );
+                        select_all.set_visible(true);
                         let row = assemble_list_row();
                         let mut child = row.first_child();
                         for index in 0..5 {
@@ -116,8 +112,9 @@ fn mode_fits_default_width_and_remains_resizable() {
                             register_list_column_cell(&columns, index, &cell);
                             child = cell.next_sibling();
                         }
-                        let (_, name, _, mode, _, _, _, _) =
+                        let (_, name, _, mode, _, _, _, checkbox) =
                             list_row_parts(&row).expect("row parts");
+                        checkbox.set_visible(true);
                         name.set_label("Permissions");
                         let table = gtk::Box::new(gtk::Orientation::Vertical, 0);
                         table.add_css_class("mode-list");
@@ -145,16 +142,9 @@ fn mode_fits_default_width_and_remains_resizable() {
                             "{size:?}, {density}, viewport {width}: {widest}, cell {}",
                             mode.width()
                         );
-                        let mut heading = headings.first_child();
-                        if let Some(widget) = heading.as_ref()
-                            && widget.has_css_class("select-all-checkbox")
-                        {
-                            heading = widget.next_sibling();
-                        }
-                        let heading = heading
-                            .expect("Name heading")
-                            .next_sibling()
-                            .expect("Mode heading");
+                        let name_heading = headings.first_child().expect("Name heading");
+                        assert_eq!(select_all.parent().as_ref(), Some(&name_heading));
+                        let heading = name_heading.next_sibling().expect("Mode heading");
                         assert_aligned(&heading, &mode, &table);
                         if width == 480 {
                             assert!(

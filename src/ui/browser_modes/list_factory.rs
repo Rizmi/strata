@@ -35,6 +35,7 @@ pub(super) struct ListFactory {
     pub(super) bound_items: Rc<RefCell<Vec<BoundModeItem>>>,
     pub(super) state: Option<Weak<crate::ui::browser::ViewState>>,
     pub(super) filter_query: Rc<RefCell<String>>,
+    pub(super) checkbox_selection: Rc<Cell<bool>>,
 }
 
 impl ListFactory {
@@ -56,6 +57,7 @@ impl ListFactory {
         let Some(row) = ListRow::from_widget(widget) else {
             return;
         };
+        row.checkbox.set_visible(self.checkbox_selection.get());
         row.register_columns(&self.columns);
         self.install_interactions(item, &row);
         item.set_child(Some(&row.widget));
@@ -97,12 +99,19 @@ impl ListFactory {
             ),
         );
         let selection = self.selection.clone();
-        let item_position = item.position();
+        let item = item.downgrade();
         row.checkbox.connect_toggled(move |check| {
+            let Some(item) = item.upgrade() else {
+                return;
+            };
+            let position = item.position();
+            if position == gtk::INVALID_LIST_POSITION {
+                return;
+            }
             if check.is_active() {
-                selection.select_item(item_position, false);
+                selection.select_item(position, false);
             } else {
-                selection.unselect_item(item_position);
+                selection.unselect_item(position);
             }
         });
     }
@@ -142,6 +151,10 @@ impl ListFactory {
             .and_then(Weak::upgrade)
             .and_then(|state| state.pending_rename_name(&binding.entry));
         row.bind_labels(item, &binding.entry, pending_name.as_deref());
+        accessibility::set_label(
+            &row.checkbox,
+            &format!("Select {}", binding.entry.display_name),
+        );
         let selected = self.selection.is_selected(item.position());
         row.checkbox.set_active(selected);
         if self.scrolling.get() {

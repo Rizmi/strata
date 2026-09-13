@@ -58,15 +58,10 @@ fn pointer_controls_cover_navigation_and_pane_actions() {
                 gtk::MultiSelection::new(Some(gtk::StringList::new(&[]))),
             );
             let mut child = headings.first_child();
-            if let Some(widget) = child.as_ref()
-                && widget.has_css_class("select-all-checkbox")
-            {
-                child = widget.next_sibling();
-            }
             let mut index = 0;
             while let Some(cell) = child {
                 let button = cell
-                    .first_child()
+                    .last_child()
                     .expect("heading overlay")
                     .downcast::<gtk::Overlay>()
                     .expect("overlay")
@@ -103,6 +98,51 @@ fn pointer_controls_cover_navigation_and_pane_actions() {
 /// Model values as the panes store them: kind, hidden flag, then the display name.
 fn value(kind: char, name: &str) -> String {
     format!("{kind}v\t{name}")
+}
+
+#[test]
+fn select_all_checkbox_controls_and_reflects_selection() {
+    gtk_test(
+        "ui::browser_modes::tests::select_all_checkbox_controls_and_reflects_selection",
+        || {
+            let browser =
+                crate::app::Browser::new(std::rc::Rc::new(crate::adapters::LocalFileSource));
+            let model = gtk::StringList::new(&["a", "b", "c"]);
+            let selection = gtk::MultiSelection::new(Some(model.clone()));
+            let (_, _, select_all, select_all_guard) = super::list_headings(
+                &browser,
+                0,
+                super::ListColumnLayout::new(),
+                selection.clone(),
+            );
+            let section = super::PaneSection {
+                view: gtk::Box::new(gtk::Orientation::Vertical, 0).upcast(),
+                view_model: model.upcast(),
+                selection: selection.clone(),
+                bound_items: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+                syncing: std::rc::Rc::new(std::cell::Cell::new(false)),
+                visit: std::rc::Rc::new(|_| {}),
+                item_context_trigger: std::rc::Rc::new(|_, _| {}),
+                select_all: Some(select_all.clone()),
+                select_all_guard: Some(select_all_guard),
+            };
+
+            select_all.set_active(true);
+            assert_eq!(selection.selection().size(), 3);
+            select_all.set_active(false);
+            assert!(selection.selection().is_empty());
+
+            selection.select_item(1, false);
+            super::sync_section_checkboxes(&section);
+            assert!(select_all.is_inconsistent());
+            assert!(!select_all.is_active());
+
+            selection.select_all();
+            super::sync_section_checkboxes(&section);
+            assert!(!select_all.is_inconsistent());
+            assert!(select_all.is_active());
+        },
+    );
 }
 
 #[test]

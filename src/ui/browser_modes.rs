@@ -294,7 +294,7 @@ pub struct ModeViews {
     mode: BrowserMode,
     density: BrowserDensity,
     group_by_type: bool,
-    checkbox_selection: Cell<bool>,
+    checkbox_selection: Rc<Cell<bool>>,
     icons_thumbnail_size: Rc<Cell<i32>>,
     focus_before_header: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
     /// Page Up/Down scrolls the viewport itself; skip the follow-up `scroll_to`
@@ -371,7 +371,7 @@ impl ModeViews {
             mode: BrowserMode::Columns,
             density: BrowserDensity::Compact,
             group_by_type: false,
-            checkbox_selection: Cell::new(false),
+            checkbox_selection: Rc::new(Cell::new(false)),
             icons_thumbnail_size: Rc::new(Cell::new(DEFAULT_ICONS_THUMBNAIL_SIZE)),
             focus_before_header: RefCell::new(None),
             suppress_focus_scroll: Cell::new(false),
@@ -1418,6 +1418,7 @@ impl ModeViews {
                 state: self.context_state.borrow().clone(),
                 new_folder_state: self.new_folder_state.borrow().clone(),
                 group_by_type: self.group_by_type,
+                checkbox_selection: self.checkbox_selection.clone(),
             },
             depth,
             &snapshot.location.display_name(),
@@ -1452,6 +1453,7 @@ struct ListOptions {
     state: Option<Weak<super::browser::ViewState>>,
     new_folder_state: Option<Weak<super::browser::ViewState>>,
     group_by_type: bool,
+    checkbox_selection: Rc<Cell<bool>>,
 }
 
 struct IconsOptions {
@@ -2278,6 +2280,7 @@ fn list_headings(
     select_all.add_css_class("row-checkbox");
     select_all.add_css_class("select-all-checkbox");
     select_all.set_tooltip_text(Some("Select all"));
+    super::accessibility::set_label(&select_all, "Select all");
     select_all.set_valign(gtk::Align::Center);
     select_all.set_visible(false);
     let select_all_guard = Rc::new(Cell::new(false));
@@ -2295,7 +2298,6 @@ fn list_headings(
             }
         });
     }
-    headings.append(&select_all);
     let preferences = browser.column_preferences(depth).unwrap_or_default();
     let sorting = Rc::new(Cell::new((
         preferences.sort_key,
@@ -2376,6 +2378,9 @@ fn list_headings(
         button_overlay.set_child(Some(&button));
         button_overlay.set_hexpand(true);
         button_overlay.add_overlay(&column_resize_handle(columns.clone(), index, width, &cell));
+        if index == 0 {
+            cell.append(&select_all);
+        }
         cell.append(&button_overlay);
         headings.append(&cell);
     }
@@ -2635,19 +2640,12 @@ fn build_list_pane(
         bound_items: bound_items.clone(),
         state: options.state.clone(),
         filter_query: filter_query.clone(),
+        checkbox_selection: options.checkbox_selection.clone(),
     }
     .build();
     let view = gtk::ListView::new(Some(selection.clone()), Some(factory));
     view.add_css_class("file-list-mode");
     super::accessibility::describe_entry_container(&view, &pane_directory_name(&browser, depth));
-    {
-        let weak_view = view.downgrade();
-        select_all.connect_toggled(move |_| {
-            if let Some(view) = weak_view.upgrade() {
-                view.grab_focus();
-            }
-        });
-    }
     if options.group_by_type {
         view.set_header_factory(Some(&type_group_header_factory()));
     }
@@ -3388,6 +3386,16 @@ fn install_modified_selection_click(
         let Some(browser) = browser.upgrade() else {
             return;
         };
+        if gesture
+            .widget()
+            .and_then(|widget| widget.pick(x, y, gtk::PickFlags::DEFAULT))
+            .is_some_and(|target| {
+                target.is::<gtk::CheckButton>()
+                    || target.ancestor(gtk::CheckButton::static_type()).is_some()
+            })
+        {
+            return;
+        }
         let modifiers = gesture.current_event_state();
         let control = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
         let shift = modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK);
@@ -3994,6 +4002,7 @@ fn assemble_list_row() -> gtk::Box {
     name_cell.add_css_class("list-name-cell");
     let checkbox = gtk::CheckButton::new();
     checkbox.add_css_class("row-checkbox");
+    super::accessibility::set_label(&checkbox, "Select item");
     checkbox.set_valign(gtk::Align::Center);
     checkbox.set_visible(false);
     let icon = super::thumbnail::ThumbnailSlot::new(18);
