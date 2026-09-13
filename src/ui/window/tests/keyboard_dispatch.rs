@@ -194,12 +194,23 @@ fn inline_editing_owns_filter_keys_but_not_global_search() {
             let action = gio::SimpleAction::new("search", None);
             action.connect_activate(move |_, _| observed.set(observed.get() + 1));
             fixture.window.add_action(&action);
+            let jumps = Rc::new(Cell::new(0));
+            let observed = jumps.clone();
+            let action = gio::SimpleAction::new("jump-folder", None);
+            action.connect_activate(move |_, _| observed.set(observed.get() + 1));
+            fixture.window.add_action(&action);
             assert!(fixture.press(Key::F2, ModifierType::empty()));
             assert!(fixture.view.rename_is_active());
             assert!(!fixture.press(Key::f, ModifierType::CONTROL_MASK));
             assert!(!fixture.view.filter_has_focus());
             assert!(fixture.press(Key::k, ModifierType::CONTROL_MASK));
             assert_eq!(searches.get(), 1);
+            assert!(fixture.press(
+                Key::k,
+                ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
+            ));
+            assert_eq!(searches.get(), 1);
+            assert_eq!(jumps.get(), 1);
             assert!(fixture.press(Key::Escape, ModifierType::empty()));
             assert!(!fixture.view.rename_is_active());
             assert_eq!(fixture.selected(), [0]);
