@@ -58,6 +58,11 @@ fn pointer_controls_cover_navigation_and_pane_actions() {
                 gtk::MultiSelection::new(Some(gtk::StringList::new(&[]))),
             );
             let mut child = headings.first_child();
+            if let Some(widget) = child.as_ref()
+                && widget.has_css_class("select-all-checkbox")
+            {
+                child = widget.next_sibling();
+            }
             let mut index = 0;
             while let Some(cell) = child {
                 let button = cell

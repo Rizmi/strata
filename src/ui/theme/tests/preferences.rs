@@ -485,6 +485,7 @@ fn all_preference_setters_publish_and_persist_without_duplicate_notifications() 
                 |m| m.set_browser_mode(BrowserMode::Icons),
                 |m| m.set_browser_density(BrowserDensity::Compact),
                 |m| m.set_group_by_type(false),
+                |m| m.set_checkbox_selection(false),
                 |m| {
                     m.set_click_activation(
                         BrowserMode::Columns,

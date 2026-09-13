@@ -3384,6 +3384,24 @@ colorchooser colorswatch overlay {
   margin-right: 2px;
 }
 
+.row-checkbox check {
+  background: alpha(@theme_text, 0.08);
+  border: 1px solid alpha(@theme_text, 0.25);
+  border-radius: 4px;
+}
+
+.row-checkbox check:checked {
+  background: @theme_accent;
+  border-color: @theme_accent;
+  color: @theme_bg;
+}
+
+.row-checkbox check:indeterminate {
+  background: alpha(@theme_accent, 0.5);
+  border-color: @theme_accent;
+  color: @theme_text;
+}
+
 .icons-card {
   outline: 1px solid transparent;
   outline-offset: -1px;

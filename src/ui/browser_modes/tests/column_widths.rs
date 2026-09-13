@@ -46,6 +46,11 @@ fn resizing_starts_at_the_visible_header_not_the_loading_placeholder() {
                 window.present();
                 settle();
                 let mut heading = headings.first_child();
+                if let Some(widget) = heading.as_ref()
+                    && widget.has_css_class("select-all-checkbox")
+                {
+                    heading = widget.next_sibling();
+                }
                 for index in 0..LIST_COLUMN_WIDTHS.len() {
                     let cell = heading.expect("heading cell");
                     heading = cell.next_sibling();
@@ -140,8 +145,13 @@ fn mode_fits_default_width_and_remains_resizable() {
                             "{size:?}, {density}, viewport {width}: {widest}, cell {}",
                             mode.width()
                         );
-                        let heading = headings
-                            .first_child()
+                        let mut heading = headings.first_child();
+                        if let Some(widget) = heading.as_ref()
+                            && widget.has_css_class("select-all-checkbox")
+                        {
+                            heading = widget.next_sibling();
+                        }
+                        let heading = heading
                             .expect("Name heading")
                             .next_sibling()
                             .expect("Mode heading");
