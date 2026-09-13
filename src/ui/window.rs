@@ -722,21 +722,29 @@ pub(super) fn build_appearance_menu(
 
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     append_menu_heading(&content, "TEXT SIZE");
-    let text_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let text_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    text_controls.add_css_class("appearance-text-size");
+    let sample = gtk::Label::new(Some("Aa"));
+    sample.add_css_class("appearance-text-sample");
+    text_controls.append(&sample);
+    let stepper = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    stepper.add_css_class("appearance-text-stepper");
+    stepper.set_hexpand(true);
+    text_controls.append(&stepper);
     for (label, tooltip, delta) in [
         ("−", "Decrease text size (Ctrl+−)", -1),
         ("+", "Increase text size (Ctrl++)", 1),
     ] {
         let button = gtk::Button::with_label(label);
-        button.add_css_class("appearance-option");
+        button.add_css_class("appearance-text-step");
         button.set_tooltip_text(Some(tooltip));
         super::accessibility::set_label(&button, tooltip);
         let manager = preferences.clone();
         button.connect_clicked(move |_| manager.set_text_size(manager.text_size().stepped(delta)));
-        text_controls.append(&button);
+        stepper.append(&button);
     }
     let reset_size = gtk::Button::new();
-    reset_size.add_css_class("appearance-option");
+    reset_size.add_css_class("appearance-text-value");
     reset_size.set_hexpand(true);
     reset_size.set_tooltip_text(Some("Reset text size (Ctrl+0)"));
     preferences.bind_preference(&reset_size, ThemeManager::text_size, |widget, size| {
@@ -747,7 +755,7 @@ pub(super) fn build_appearance_menu(
     });
     let manager = preferences.clone();
     reset_size.connect_clicked(move |_| manager.set_text_size(super::theme::TextSize::default()));
-    text_controls.append(&reset_size);
+    stepper.insert_child_after(&reset_size, stepper.first_child().as_ref());
     content.append(&text_controls);
 
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
