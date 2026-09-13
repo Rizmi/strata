@@ -26,8 +26,7 @@ pub(super) async fn render(path: &Path, cancellation: &Cancellation) -> Result<V
             .attribute_object("preview::icon")
             .and_then(|object| object.downcast::<gio::LoadableIcon>().ok())
             .ok_or("The camera did not provide a thumbnail")?;
-        let (stream, _) = icon
-            .load_future(256)
+        let stream = load_icon_stream(&icon)
             .await
             .map_err(|error| error.to_string())?;
         let bytes = read_icon(&stream, MAX_ICON_BYTES).await?;
@@ -67,6 +66,67 @@ pub(super) async fn render(path: &Path, cancellation: &Cancellation) -> Result<V
     })
     .await
     .map_err(|_| "Camera thumbnail worker failed".to_owned())?
+}
+
+// gio 0.22 treats load_finish's optional content type as a non-null GString.
+// GVfs preview icons may return a stream without a type. Request only the stream
+// until the binding is corrected; decoding still happens exclusively in the sandbox.
+#[expect(
+    unsafe_code,
+    reason = "GIO's nullable content-type output is incorrectly bound as non-null in gio 0.22"
+)]
+async fn load_icon_stream(icon: &gio::LoadableIcon) -> Result<gio::InputStream, glib::Error> {
+    use glib::translate::*;
+    type Completion = gio::GioFutureResult<Result<gio::InputStream, glib::Error>>;
+
+    unsafe extern "C" fn completed(
+        source: *mut glib::gobject_ffi::GObject,
+        result: *mut gio::ffi::GAsyncResult,
+        data: glib::ffi::gpointer,
+    ) {
+        // SAFETY: load_async receives this box exactly once; its callback retains
+        // ownership even when GioFuture is dropped, and runs on the initiating context.
+        let completion = unsafe { Box::from_raw(data.cast::<Completion>()) };
+        let mut error = std::ptr::null_mut();
+        // SAFETY: GIO supplies the matching live source/result; the type output is optional.
+        let raw_stream = unsafe {
+            gio::ffi::g_loadable_icon_load_finish(
+                source.cast(),
+                result,
+                std::ptr::null_mut(),
+                &mut error,
+            )
+        };
+        // SAFETY: load_finish transfers ownership of the stream, or returns null.
+        let stream: Option<gio::InputStream> = unsafe { from_glib_full(raw_stream) };
+        let result = if !error.is_null() {
+            // SAFETY: the non-null GError is transferred to this caller by load_finish.
+            Err(unsafe { from_glib_full(error) })
+        } else {
+            stream.ok_or_else(|| {
+                glib::Error::new(
+                    gio::IOErrorEnum::Failed,
+                    "Camera returned no thumbnail stream",
+                )
+            })
+        };
+        completion.resolve(result);
+    }
+
+    gio::GioFuture::new(icon, |icon, cancellable, completion: Completion| {
+        // SAFETY: source/cancellable are live; GIO retains them until its callback.
+        // Completion is boxed for that single callback, including after cancellation.
+        unsafe {
+            gio::ffi::g_loadable_icon_load_async(
+                icon.to_glib_none().0,
+                256,
+                cancellable.to_glib_none().0,
+                Some(completed),
+                Box::into_raw(Box::new(completion)).cast(),
+            );
+        }
+    })
+    .await
 }
 
 async fn read_icon(stream: &impl IsA<gio::InputStream>, limit: usize) -> Result<Vec<u8>, String> {

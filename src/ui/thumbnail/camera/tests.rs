@@ -68,6 +68,91 @@ fn camera_thumbnail_bindings_keep_duplicate_names_distinct_and_discard_stale_res
 }
 
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "Verify the null content-type fixture through the underlying GIO contract"
+)]
+fn camera_icon_without_content_type_loads_without_panicking() {
+    use glib::translate::*;
+    let _lock = crate::test_support::ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("context lock");
+    let context = glib::MainContext::default();
+    let _owner = context.acquire().expect("context owner");
+    let bytes = glib::Bytes::from_static(b"camera preview payload");
+    let icon = gio::BytesIcon::new(&bytes).upcast::<gio::LoadableIcon>();
+    // BytesIcon reproduces the real GVfs contract: a successful stream with no MIME type.
+    let mut content_type = std::ptr::null_mut();
+    let mut error = std::ptr::null_mut();
+    // SAFETY: the icon is live and the optional output pointers are valid.
+    let raw_stream = unsafe {
+        gio::ffi::g_loadable_icon_load(
+            icon.to_glib_none().0,
+            256,
+            &mut content_type,
+            std::ptr::null_mut(),
+            &mut error,
+        )
+    };
+    // SAFETY: GIO transfers ownership of each nullable output to this caller.
+    let stream: Option<gio::InputStream> = unsafe { from_glib_full(raw_stream) };
+    // SAFETY: the optional type string is a full-transfer GIO output.
+    let content_type: Option<glib::GString> = unsafe { from_glib_full(content_type) };
+    // SAFETY: the optional error is a full-transfer GIO output.
+    let error: Option<glib::Error> = unsafe { from_glib_full(error) };
+    assert!(stream.is_some());
+    assert!(error.is_none());
+    assert!(content_type.is_none());
+    context.block_on(async {
+        let stream = load_icon_stream(&icon)
+            .await
+            .expect("nullable type is valid");
+        assert_eq!(
+            read_icon(&stream, MAX_ICON_BYTES)
+                .await
+                .expect("icon bytes"),
+            bytes.as_ref()
+        );
+        let fixture = tempfile::tempdir().expect("fixture");
+        let missing = gio::FileIcon::new(&gio::File::for_path(fixture.path().join("missing")))
+            .upcast::<gio::LoadableIcon>();
+        assert!(
+            load_icon_stream(&missing)
+                .await
+                .expect_err("failed load must stay an error")
+                .matches(gio::IOErrorEnum::NotFound)
+        );
+    });
+}
+
+#[test]
+fn camera_icon_load_callback_survives_a_dropped_future() {
+    let _lock = crate::test_support::ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("context lock");
+    let context = glib::MainContext::default();
+    let _owner = context.acquire().expect("context owner");
+    context.block_on(async {
+        let icon = gio::BytesIcon::new(&glib::Bytes::from_static(b"preview"))
+            .upcast::<gio::LoadableIcon>();
+        let weak = icon.downgrade();
+        {
+            let mut future = Box::pin(load_icon_stream(&icon));
+            assert!(futures_lite::future::poll_once(&mut future).await.is_none());
+        }
+        drop(icon);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while weak.upgrade().is_some() && Instant::now() < deadline {
+            glib::timeout_future(Duration::from_millis(1)).await;
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "cancelled callback must release its source"
+        );
+    });
+}
+
+#[test]
 fn camera_icon_reads_are_bounded_even_without_size_metadata() {
     let _lock = crate::test_support::ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
