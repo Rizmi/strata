@@ -28,7 +28,12 @@ fn resizing_starts_at_the_visible_header_not_the_loading_placeholder() {
             for viewport in [480, 1200] {
                 let columns = ListColumnLayout::new();
                 let loading = list_loading_skeleton(&columns);
-                let (headings, _) = list_headings(&browser, 0, columns.clone());
+                let (headings, _, _, _) = list_headings(
+                    &browser,
+                    0,
+                    columns.clone(),
+                    gtk::MultiSelection::new(Some(gtk::StringList::new(&[]))),
+                );
                 let stack = gtk::Stack::new();
                 stack.add_named(&loading, Some("loading"));
                 stack.add_named(&headings, Some("content"));
@@ -93,7 +98,12 @@ fn mode_fits_default_width_and_remains_resizable() {
                 for density in ["density-compact", "density-airy"] {
                     for width in [480, 1000] {
                         let columns = ListColumnLayout::new();
-                        let (headings, _) = list_headings(&browser, 0, columns.clone());
+                        let (headings, _, _, _) = list_headings(
+                            &browser,
+                            0,
+                            columns.clone(),
+                            gtk::MultiSelection::new(Some(gtk::StringList::new(&[]))),
+                        );
                         let row = assemble_list_row();
                         let mut child = row.first_child();
                         for index in 0..5 {
@@ -101,7 +111,8 @@ fn mode_fits_default_width_and_remains_resizable() {
                             register_list_column_cell(&columns, index, &cell);
                             child = cell.next_sibling();
                         }
-                        let (_, name, _, mode, _, _, _) = list_row_parts(&row).expect("row parts");
+                        let (_, name, _, mode, _, _, _, _) =
+                            list_row_parts(&row).expect("row parts");
                         name.set_label("Permissions");
                         let table = gtk::Box::new(gtk::Orientation::Vertical, 0);
                         table.add_css_class("mode-list");

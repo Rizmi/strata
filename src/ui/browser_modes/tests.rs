@@ -51,7 +51,12 @@ fn pointer_controls_cover_navigation_and_pane_actions() {
                 child = button.next_sibling();
             }
             assert_eq!(count, 3);
-            let (headings, _) = super::list_headings(&browser, 0, super::ListColumnLayout::new());
+            let (headings, _, _, _) = super::list_headings(
+                &browser,
+                0,
+                super::ListColumnLayout::new(),
+                gtk::MultiSelection::new(Some(gtk::StringList::new(&[]))),
+            );
             let mut child = headings.first_child();
             let mut index = 0;
             while let Some(cell) = child {
@@ -522,7 +527,7 @@ fn list_bind_can_read_the_rename_field() {
             return;
         }
         let row = super::assemble_list_row();
-        let (_, name, field, _, _, _, _) =
+        let (_, name, field, _, _, _, _, _) =
             super::list_row_parts(&row).expect("bind and settle walk this row");
         assert!(name.has_css_class("alternate-rename-label"));
         assert!(field.has_css_class("inline-rename"));

@@ -3712,10 +3712,9 @@ fn connect_selection(
                     if let Some(widget) = bound.widget.upgrade()
                         && let Ok(row) = widget.downcast::<gtk::Box>()
                         && let Some((_, _, _, _, _, _, _, checkbox)) = list_row_parts(&row)
+                        && checkbox.is_active() != selected
                     {
-                        if checkbox.is_active() != selected {
-                            checkbox.set_active(selected);
-                        }
+                        checkbox.set_active(selected);
                     }
                 }
             }
@@ -4023,6 +4022,7 @@ fn assemble_list_row() -> gtk::Box {
     row
 }
 
+#[expect(clippy::type_complexity, reason = "GTK row part tuple")]
 fn list_row_parts(
     row: &gtk::Box,
 ) -> Option<(

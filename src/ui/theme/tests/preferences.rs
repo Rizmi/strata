@@ -24,6 +24,7 @@ fn non_default_preferences() -> Preferences {
         browser_mode: "list".into(),
         browser_density: "airy".into(),
         group_by_type: true,
+        checkbox_selection: true,
         columns_file_clicks: 1,
         columns_folder_clicks: 2,
         icons_file_clicks: 1,

@@ -258,6 +258,8 @@ fn scrolling_defers_details_and_settling_preserves_rename_state() {
                 syncing: Rc::new(Cell::new(false)),
                 visit: super::super::bound_item_visitor(fixture.items.clone()),
                 item_context_trigger: Rc::new(|_, _| {}),
+                select_all: None,
+                select_all_guard: None,
             };
             refresh_list_section(
                 fixture.browser.as_ref().expect("browser"),

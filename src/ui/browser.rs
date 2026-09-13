@@ -858,7 +858,10 @@ impl BrowserView {
     }
 
     pub fn set_checkbox_selection(&self, enabled: bool) {
-        self.state.mode_views.borrow().set_checkbox_selection(enabled);
+        self.state
+            .mode_views
+            .borrow()
+            .set_checkbox_selection(enabled);
     }
 
     pub fn activate_focused(&self) {
