@@ -24,6 +24,11 @@ const SERVICE_FILE: &str = "org.freedesktop.impl.portal.desktop.strata.service";
 const STATE_DIRECTORY: &str = "strata/portal-install";
 const STATE_FILE: &str = "state.toml";
 const PORTAL_BACKEND_UNIT: &str = "dbus-:*-org.freedesktop.impl.portal.desktop.strata@*.service";
+const DESKTOP_ID: &str = "io.github.lgse.Strata.desktop";
+const FILE_MANAGER_SERVICE: &str = "io.github.lgse.Strata.FileManager1.service";
+const FILE_MANAGER_STATE_DIRECTORY: &str = "strata/file-manager-install";
+const FILE_MANAGER_STATE_FILE: &str = "state.toml";
+const INODE_DIRECTORY: &str = "inode/directory";
 
 pub(crate) fn install() -> Result<String, String> {
     let executable = env::current_exe()
@@ -52,6 +57,240 @@ pub(crate) fn uninstall() -> Result<String, String> {
     Ok(format!(
         "Removed the per-user Strata file chooser integration.{edit_note}{restart_warning}"
     ))
+}
+
+pub(crate) fn install_file_manager() -> Result<String, String> {
+    let executable = env::current_exe()
+        .map_err(|error| format!("Could not locate the Strata executable: {error}"))?;
+    let context = SetupContext::from_environment()?;
+    let previous = query_default_file_manager().filter(|id| id != DESKTOP_ID);
+    install_file_manager_at(&context, &executable, previous.as_deref())?;
+    set_default_file_manager()?;
+    reload_dbus();
+    Ok("Installed Strata as the default file manager. Reveal and Open Containing Folder from other apps will now use Strata.".into())
+}
+
+pub(crate) fn uninstall_file_manager() -> Result<String, String> {
+    let context = SetupContext::from_environment()?;
+    let restored = uninstall_file_manager_at(&context)?;
+    if let Some(previous) = &restored {
+        let _ = restore_default_file_manager(previous);
+    }
+    reload_dbus();
+    Ok(if let Some(restored) = restored {
+        format!(
+            "Removed the Strata file manager integration. Restored the previous default: {restored}."
+        )
+    } else {
+        "Removed the Strata file manager integration. Your system default file manager will handle folders again.".into()
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FileManagerStatus {
+    pub default: bool,
+    pub has_service: bool,
+}
+
+pub(crate) fn file_manager_status() -> Result<FileManagerStatus, String> {
+    let context = SetupContext::from_environment()?;
+    file_manager_status_at(&context)
+}
+
+fn install_file_manager_at(
+    context: &SetupContext,
+    executable: &Path,
+    previous: Option<&str>,
+) -> Result<(), String> {
+    let executable = secure_executable(executable)?;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| "Strata must be installed at a UTF-8 path".to_owned())?;
+    if executable
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, '\\' | '\'' | '"'))
+    {
+        return Err(
+            "The Strata executable path contains characters unsupported by D-Bus activation"
+                .to_owned(),
+        );
+    }
+
+    let service_directory = context.data_home.join("dbus-1/services");
+    fs::create_dir_all(&service_directory)
+        .map_err(|error| path_error("create", &service_directory, error))?;
+
+    let target = service_directory.join(FILE_MANAGER_SERVICE);
+    let conflict = find_file_manager_conflict(&service_directory);
+    if let Some(conflict) = conflict {
+        return Err(format!(
+            "Another per-user FileManager1 provider is already installed: {conflict}"
+        ));
+    }
+
+    let service = include_str!("../data/io.github.lgse.Strata.FileManager1.service")
+        .replace("/usr/bin/strata", executable);
+    write_public(&target, service.as_bytes())?;
+
+    let state_directory = context.data_home.join(FILE_MANAGER_STATE_DIRECTORY);
+    let state = FileManagerInstallState {
+        previous_default: previous.map(str::to_owned),
+    };
+    write_file_manager_state(&state_directory, &state)?;
+
+    Ok(())
+}
+
+fn uninstall_file_manager_at(context: &SetupContext) -> Result<Option<String>, String> {
+    let service = context
+        .data_home
+        .join("dbus-1/services")
+        .join(FILE_MANAGER_SERVICE);
+    remove_if_exists(&service)?;
+
+    let state_directory = context.data_home.join(FILE_MANAGER_STATE_DIRECTORY);
+    let restored = if let Some(state) = read_file_manager_state(&state_directory)? {
+        state.previous_default.clone()
+    } else {
+        None
+    };
+    remove_file_manager_state(&state_directory)?;
+    Ok(restored)
+}
+
+fn file_manager_status_at(context: &SetupContext) -> Result<FileManagerStatus, String> {
+    let service = context
+        .data_home
+        .join("dbus-1/services")
+        .join(FILE_MANAGER_SERVICE);
+    let has_service = service.is_file();
+    let default = query_default_file_manager().as_deref() == Some(DESKTOP_ID);
+    Ok(FileManagerStatus {
+        default,
+        has_service,
+    })
+}
+
+fn find_file_manager_conflict(service_directory: &Path) -> Option<String> {
+    let entries = fs::read_dir(service_directory).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?;
+        if name == FILE_MANAGER_SERVICE {
+            continue;
+        }
+        if !name.ends_with(".service") {
+            continue;
+        }
+        if let Ok(contents) = fs::read_to_string(&path)
+            && contents
+                .lines()
+                .any(|line| line.trim() == "Name=org.freedesktop.FileManager1")
+        {
+            return Some(path.display().to_string());
+        }
+    }
+    None
+}
+
+fn query_default_file_manager() -> Option<String> {
+    Command::new("xdg-mime")
+        .args(["query", "default", INODE_DIRECTORY])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|output| output.trim().to_owned())
+        .filter(|output| !output.is_empty())
+}
+
+fn set_default_file_manager() -> Result<(), String> {
+    let status = Command::new("xdg-mime")
+        .args(["default", DESKTOP_ID, INODE_DIRECTORY])
+        .status()
+        .map_err(|error| format!("Could not set the default file manager: {error}"))?;
+    if !status.success() {
+        return Err("The folder association did not change".to_owned());
+    }
+    let current = query_default_file_manager();
+    if current.as_deref() != Some(DESKTOP_ID) {
+        return Err(format!(
+            "The folder association did not change (current value: {current:?})"
+        ));
+    }
+    Ok(())
+}
+
+fn restore_default_file_manager(previous: &str) -> Result<(), String> {
+    let status = Command::new("xdg-mime")
+        .args(["default", previous, INODE_DIRECTORY])
+        .status()
+        .map_err(|error| format!("Could not restore the previous file manager: {error}"))?;
+    if !status.success() {
+        return Err("Could not restore the previous file manager".to_owned());
+    }
+    Ok(())
+}
+
+fn reload_dbus() {
+    let _ = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.ReloadConfig",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FileManagerInstallState {
+    previous_default: Option<String>,
+}
+
+fn write_file_manager_state(
+    directory: &Path,
+    state: &FileManagerInstallState,
+) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| path_error("create", directory, error))?;
+    let path = directory.join(FILE_MANAGER_STATE_FILE);
+    let contents = toml::to_string(state)
+        .map_err(|error| format!("Could not serialize file manager state: {error}"))?;
+    crate::storage::atomic_write(&path, contents.as_bytes())
+        .map_err(|error| path_error("write", &path, error))
+}
+
+fn read_file_manager_state(directory: &Path) -> Result<Option<FileManagerInstallState>, String> {
+    let path = directory.join(FILE_MANAGER_STATE_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = read_utf8(&path)?;
+    let state: FileManagerInstallState = toml::from_str(&contents)
+        .map_err(|error| format!("Could not read file manager state: {error}"))?;
+    Ok(Some(state))
+}
+
+fn remove_file_manager_state(directory: &Path) -> Result<(), String> {
+    remove_if_exists(&directory.join(FILE_MANAGER_STATE_FILE))?;
+    match fs::remove_dir(directory) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(path_error("remove", directory, error)),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

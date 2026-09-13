@@ -60,7 +60,7 @@ pub(super) fn settings_row() -> gtk::Box {
     title.set_xalign(0.0);
     title.add_css_class("settings-option-title");
     let description = gtk::Label::new(Some(
-        "Use Strata for Open and Save dialogs in portal-aware apps, or restore your previous chooser. This is separate from your default file manager.",
+        "Make Strata your default file manager: Open and Save dialogs, opening folders, and Reveal in File Manager from other apps.",
     ));
     description.set_xalign(0.0);
     description.set_wrap(true);
@@ -169,33 +169,42 @@ impl Dialog {
         let dialog = self.clone();
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(|| {
-                portal_setup::dismiss_prompt()?;
-                portal_setup::status()
+                let _ = portal_setup::dismiss_prompt();
+                let chooser = portal_setup::status()?;
+                let file_manager = portal_setup::file_manager_status()?;
+                let configured =
+                    chooser.configured && file_manager.default && file_manager.has_service;
+                let has_installation =
+                    chooser.has_installation || file_manager.has_service || file_manager.default;
+                Ok::<_, String>((configured, has_installation))
             })
             .await;
             dialog.set_busy(false);
             match result {
-                Ok(Ok(status)) => {
-                    dialog.enable.set(Some(!status.configured));
-                    dialog.message(if status.configured {
-                        "Strata is currently configured as your preferred file chooser. Restoring removes its integration and preserves unrelated configuration edits."
-                    } else if status.has_installation {
-                        "Strata integration exists, but it is not your preferred chooser. You can update its configuration below."
-                    } else {
-                        "Your current file chooser has not been changed. You can enable Strata now or later in Settings → General → System file chooser."
-                    }, false);
+                Ok(Ok((configured, has_installation))) => {
+                    dialog.enable.set(Some(!configured));
+                    dialog.message(
+                        if configured {
+                            "Strata is currently your default file manager. Open and Save dialogs, opening folders, and Reveal in File Manager from other apps all use Strata. Restoring removes this integration."
+                        } else if has_installation {
+                            "Some Strata integration exists, but it is not fully configured. You can complete the setup below."
+                        } else {
+                            "Your current file manager and chooser have not been changed. Enabling Strata makes it the default for Open and Save dialogs, opening folders, and Reveal in File Manager from other apps."
+                        },
+                        false,
+                    );
                     if let Some(confirm) = dialog.confirm.upgrade() {
-                        confirm.set_label(if status.configured {
-                            "Restore previous chooser"
+                        confirm.set_label(if configured {
+                            "Restore previous"
                         } else {
                             "Use Strata"
                         });
                     }
                 }
                 Ok(Err(error)) => dialog.load_failed(&error),
-                Err(error) => dialog.load_failed(&format!(
-                    "Could not read file chooser configuration: {error:?}"
-                )),
+                Err(error) => {
+                    dialog.load_failed(&format!("Could not read configuration: {error:?}"))
+                }
             }
             if let Some(cancel) = dialog.cancel.upgrade() {
                 cancel.grab_focus();
@@ -224,7 +233,7 @@ impl Dialog {
         };
         if SETUP_RUNNING.replace(true) {
             self.message(
-                "Another file chooser configuration is running. Try again when it finishes.",
+                "Another configuration is running. Try again when it finishes.",
                 true,
             );
             return;
@@ -232,9 +241,9 @@ impl Dialog {
         self.set_busy(true);
         self.message(
             if enable {
-                "Configuring Strata and restarting the portal service…"
+                "Configuring Strata as your default file manager…"
             } else {
-                "Restoring your previous chooser and restarting the portal service…"
+                "Restoring your previous file manager and chooser…"
             },
             false,
         );
@@ -248,11 +257,16 @@ impl Dialog {
         glib::spawn_future_local(async move {
             let _hold = hold;
             let result = gio::spawn_blocking(move || {
-                if enable {
-                    portal_setup::install()
+                let outcome: Result<String, String> = if enable {
+                    let chooser = portal_setup::install()?;
+                    let file_manager = portal_setup::install_file_manager()?;
+                    Ok(format!("{chooser}\n{file_manager}"))
                 } else {
-                    portal_setup::uninstall()
-                }
+                    let chooser = portal_setup::uninstall()?;
+                    let file_manager = portal_setup::uninstall_file_manager()?;
+                    Ok(format!("{chooser}\n{file_manager}"))
+                };
+                outcome
             })
             .await;
             SETUP_RUNNING.set(false);
@@ -260,9 +274,7 @@ impl Dialog {
             match result {
                 Ok(Ok(message)) => dialog.complete(&message),
                 Ok(Err(error)) => dialog.message(&error, true),
-                Err(error) => {
-                    dialog.message(&format!("File chooser setup failed: {error:?}"), true)
-                }
+                Err(error) => dialog.message(&format!("Setup failed: {error:?}"), true),
             }
         });
     }
@@ -277,14 +289,15 @@ fn show_dialog(parent: &gtk::Window, offer: bool) {
 fn build_dialog(parent: &gtk::Window, offer: bool) -> Option<Rc<Dialog>> {
     let overlay = parent.child().and_downcast::<gtk::Overlay>()?;
     let root = overlay.child().and_downcast::<BlurBin>();
+    let heading = if offer {
+        "Use Strata as your file manager?"
+    } else {
+        "System file manager"
+    };
     let layout: ModalLayout = message_dialog_layout(
         icons::FOLDER,
-        if offer {
-            "Use Strata as your file chooser?"
-        } else {
-            "System file chooser"
-        },
-        "Open and Save dialogs, with your familiar Strata views.",
+        heading,
+        "Open and Save dialogs, opening folders, and Reveal in File Manager from other apps.",
         "Use Strata",
         ModalTone::Accent,
     );
@@ -293,7 +306,7 @@ fn build_dialog(parent: &gtk::Window, offer: bool) -> Option<Rc<Dialog>> {
         .cancel
         .set_label(if offer { "Not now" } else { "Cancel" });
     let description = gtk::Label::new(Some(&super::controls::wrap_dialog_text(
-        "Only apps using the desktop FileChooser portal are affected. Requires xdg-desktop-portal. Changing this setting restarts the portal service; close any open file dialogs first. Your default file manager and other portals are unchanged.",
+        "This sets Strata as the default for Open and Save dialogs (FileChooser portal), opening folders (inode/directory), and Reveal in File Manager (FileManager1 D-Bus). Requires xdg-desktop-portal and xdg-mime. Changing this restarts the portal service and reloads the D-Bus session bus.",
         super::controls::MESSAGE_DIALOG_WIDTH_CHARS,
     )));
     description.set_xalign(0.0);
@@ -305,7 +318,7 @@ fn build_dialog(parent: &gtk::Window, offer: bool) -> Option<Rc<Dialog>> {
     success.set_halign(gtk::Align::Center);
     success.set_visible(false);
     layout.body.append(&success);
-    let status = gtk::Label::new(Some("Checking your current chooser…"));
+    let status = gtk::Label::new(Some("Checking your current configuration…"));
     status.set_xalign(0.0);
     status.set_wrap(true);
     status.set_max_width_chars(super::controls::MESSAGE_DIALOG_WIDTH_CHARS as i32);

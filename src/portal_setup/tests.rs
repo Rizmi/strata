@@ -8,8 +8,9 @@ use std::{
 };
 
 use super::{
-    SetupContext, disable_config, enable_config, install_at, refresh_configured_portal_at,
-    refresh_stale_portal_at, secure_executable, trusted_owner, uninstall_at,
+    SetupContext, disable_config, enable_config, install_at, install_file_manager_at,
+    refresh_configured_portal_at, refresh_stale_portal_at, secure_executable, trusted_owner,
+    uninstall_at, uninstall_file_manager_at,
 };
 
 const FILE_CHOOSER: &str = "org.freedesktop.impl.portal.FileChooser";
@@ -379,4 +380,65 @@ fn fixture() -> tempfile::TempDir {
         .prefix("strata-portal-")
         .tempdir_in("target")
         .expect("fixture directory")
+}
+
+#[test]
+fn file_manager_service_installs_and_reports_status() {
+    let fixture = fixture();
+    let context = context(fixture.path());
+    let exe = executable(fixture.path());
+    install_file_manager_at(&context, &exe, Some("thunar.desktop")).expect("install file manager");
+    let service = context
+        .data_home
+        .join("dbus-1/services")
+        .join(super::FILE_MANAGER_SERVICE);
+    assert!(service.is_file());
+    let contents = fs::read_to_string(&service).expect("service contents");
+    assert!(contents.contains("Name=org.freedesktop.FileManager1"));
+    assert!(contents.contains(&exe.display().to_string()));
+    let state = super::read_file_manager_state(
+        &context.data_home.join(super::FILE_MANAGER_STATE_DIRECTORY),
+    )
+    .expect("read state")
+    .expect("state exists");
+    assert_eq!(state.previous_default.as_deref(), Some("thunar.desktop"));
+}
+
+#[test]
+fn file_manager_conflict_is_rejected() {
+    let fixture = fixture();
+    let context = context(fixture.path());
+    let exe = executable(fixture.path());
+    let service_dir = context.data_home.join("dbus-1/services");
+    fs::create_dir_all(&service_dir).expect("service dir");
+    let other = service_dir.join("org.other.FileManager1.service");
+    fs::write(
+        &other,
+        "[D-BUS Service]\nName=org.freedesktop.FileManager1\nExec=/usr/bin/other\n",
+    )
+    .expect("conflicting service");
+    let error = install_file_manager_at(&context, &exe, None).expect_err("conflict rejected");
+    assert!(error.contains("Another per-user FileManager1 provider"));
+}
+
+#[test]
+fn file_manager_uninstall_removes_service_and_state() {
+    let fixture = fixture();
+    let context = context(fixture.path());
+    let exe = executable(fixture.path());
+    install_file_manager_at(&context, &exe, Some("thunar.desktop")).expect("install");
+    let service = context
+        .data_home
+        .join("dbus-1/services")
+        .join(super::FILE_MANAGER_SERVICE);
+    assert!(service.is_file());
+    uninstall_file_manager_at(&context).expect("uninstall");
+    assert!(!service.exists());
+    assert!(
+        !context
+            .data_home
+            .join(super::FILE_MANAGER_STATE_DIRECTORY)
+            .join(super::FILE_MANAGER_STATE_FILE)
+            .exists()
+    );
 }
