@@ -235,19 +235,19 @@ headerbar menubutton.header-action > button:focus-visible {
 }
 
 .appearance-text-size {
-  margin: 6px 8px;
+  margin: 2px 8px;
 }
 
-.appearance-text-sample,
 .appearance-text-stepper {
   background: alpha(@theme_text, 0.04);
   border: 1px solid alpha(@theme_border, 0.6);
-  border-radius: 10px;
+  border-radius: 6px;
   color: @theme_text;
 }
 
 .appearance-text-sample {
-  min-width: 36px;
+  color: @theme_accent;
+  min-width: 17px;
   font-weight: 700;
 }
 
@@ -260,21 +260,22 @@ headerbar menubutton.header-action > button:focus-visible {
   color: @theme_text;
   font-size: inherit;
   font-weight: 400;
-  min-height: 34px;
-  min-width: 34px;
-  padding: 0 6px;
+  min-height: 26px;
+  min-width: 26px;
+  padding: 0;
   margin: 0;
 }
 
 .appearance-text-stepper button:first-child {
-  border-radius: 9px 0 0 9px;
+  border-radius: 5px 0 0 5px;
 }
 
 .appearance-text-stepper button:last-child {
-  border-radius: 0 9px 9px 0;
+  border-radius: 0 5px 5px 0;
 }
 
 .appearance-text-stepper button.appearance-text-value {
+  padding: 0 7px;
   border-left: 1px solid alpha(@theme_border, 0.6);
   border-right: 1px solid alpha(@theme_border, 0.6);
 }

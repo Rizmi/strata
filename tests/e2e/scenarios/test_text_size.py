@@ -158,9 +158,9 @@ def test_custom_text_size_shortcuts_numeric_control_and_restart(strata, mode, re
         strata.screenshot(ArtifactCollector(test_name=f"text-size-{mode}").directory / "before.png")
     strata.open_appearance_menu()
     for name, pixels in [
-        ("+", "14"),
-        ("−", "13"),
-        ("−", "12"),
+        ("Increase text size (Ctrl++)", "14"),
+        ("Decrease text size (Ctrl+−)", "13"),
+        ("Decrease text size (Ctrl+−)", "12"),
         ("12 px", "13"),
     ]:
         button = strata.wait(

@@ -722,7 +722,7 @@ pub(super) fn build_appearance_menu(
 
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     append_menu_heading(&content, "TEXT SIZE");
-    let text_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let text_controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     text_controls.add_css_class("appearance-text-size");
     let sample = gtk::Label::new(Some("Aa"));
     sample.add_css_class("appearance-text-sample");
@@ -730,12 +730,20 @@ pub(super) fn build_appearance_menu(
     let stepper = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     stepper.add_css_class("appearance-text-stepper");
     stepper.set_hexpand(true);
+    stepper.set_halign(gtk::Align::End);
     text_controls.append(&stepper);
-    for (label, tooltip, delta) in [
-        ("−", "Decrease text size (Ctrl+−)", -1),
-        ("+", "Increase text size (Ctrl++)", 1),
+    for (icon, tooltip, delta) in [
+        (
+            crate::assets::icons::MINUS,
+            "Decrease text size (Ctrl+−)",
+            -1,
+        ),
+        (crate::assets::icons::PLUS, "Increase text size (Ctrl++)", 1),
     ] {
-        let button = gtk::Button::with_label(label);
+        let image = crate::assets::primary_icon(icon, 16);
+        image.set_halign(gtk::Align::Center);
+        image.set_valign(gtk::Align::Center);
+        let button = gtk::Button::builder().child(&image).build();
         button.add_css_class("appearance-text-step");
         button.set_tooltip_text(Some(tooltip));
         super::accessibility::set_label(&button, tooltip);
