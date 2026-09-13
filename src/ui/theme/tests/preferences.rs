@@ -20,6 +20,7 @@ fn non_default_preferences() -> Preferences {
         filter_include_subfolders: false,
         show_keybinding_hints: false,
         reduce_motion: true,
+        element_glow: false,
         browser_mode: "list".into(),
         browser_density: "airy".into(),
         group_by_type: true,
@@ -44,6 +45,7 @@ fn non_default_preferences() -> Preferences {
         check_for_updates: false,
         preview_muted: true,
         preview_volume: 0.35,
+        preview_text_wrap: true,
         auto_refresh_interval: 600,
         cross_volume_drop_strategy: CrossVolumeDropStrategy::Move.as_str().into(),
         release_channel: "nightly".into(),
@@ -338,6 +340,35 @@ fn every_saved_preference_loads_before_any_settings_page_exists() {
             assert!(!manager.filter_include_subfolders());
             assert!(!manager.show_keybinding_hints());
             assert!(manager.reduce_motion());
+            assert!(!manager.element_glow());
+            let windows = [gtk::Window::new(), gtk::Window::new()];
+            for enabled in [false, true, false] {
+                manager.set_element_glow(enabled);
+                for window in &windows {
+                    let surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    window.set_child(Some(&surface));
+                    #[expect(
+                        deprecated,
+                        reason = "GTK has no replacement API for resolving named CSS colors"
+                    )]
+                    let (glow, accent) = {
+                        let style = surface.style_context();
+                        (
+                            style.lookup_color("theme_glow").expect("glow color"),
+                            style.lookup_color("theme_accent").expect("accent color"),
+                        )
+                    };
+                    if enabled {
+                        assert_eq!(glow, accent);
+                    } else {
+                        assert_eq!(glow.alpha(), 0.0);
+                        assert!(accent.alpha() > 0.0);
+                    }
+                }
+            }
+            for window in windows {
+                window.close();
+            }
             assert!(!crate::ui::motion::animations_enabled());
             assert_eq!(manager.browser_mode(), BrowserMode::List);
             assert_eq!(manager.browser_density(), BrowserDensity::Airy);
@@ -372,6 +403,7 @@ fn every_saved_preference_loads_before_any_settings_page_exists() {
             assert_eq!(manager.release_channel(), Channel::Nightly);
             assert!(manager.preview_muted());
             assert_eq!(manager.preview_volume(), 0.35);
+            assert!(manager.preview_text_wrap());
             assert_eq!(manager.auto_refresh_interval(), 600);
             assert_eq!(
                 manager.cross_volume_drop_strategy(),
@@ -448,6 +480,7 @@ fn all_preference_setters_publish_and_persist_without_duplicate_notifications() 
                 |m| m.set_filter_include_subfolders(true),
                 |m| m.set_show_keybinding_hints(true),
                 |m| m.set_reduce_motion(false),
+                |m| m.set_element_glow(true),
                 |m| m.set_browser_mode(BrowserMode::Icons),
                 |m| m.set_browser_density(BrowserDensity::Compact),
                 |m| m.set_group_by_type(false),
@@ -478,6 +511,7 @@ fn all_preference_setters_publish_and_persist_without_duplicate_notifications() 
                 |m| m.set_release_channel(Channel::Stable),
                 |m| m.set_preview_muted(false),
                 |m| m.set_preview_volume(0.8),
+                |m| m.set_preview_text_wrap(false),
                 |m| m.set_auto_refresh_interval(60),
                 |m| m.set_cross_volume_drop_strategy(CrossVolumeDropStrategy::Copy),
                 |m| m.set_folder_color(Path::new("/fixture/folder"), None),

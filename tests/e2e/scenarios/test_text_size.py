@@ -107,9 +107,14 @@ def _reveal_page_control(strata, name, role="button"):
         if _inside_scroll_view(node):
             return True
         viewport = scroll.screen_bounds()
-        # The outer gutter avoids scrolling the nested theme library instead.
-        at = (viewport.x + viewport.width * 99 // 100, viewport.y + viewport.height // 2)
-        strata.pointer.scroll(at, clicks=3, down=node.screen_bounds().y > at[1])
+        # Stay in the content gutter: the scrollbar scrolls by whole pages,
+        # which can jump over a control without ever showing all of it.
+        # The nested theme library ends before this gutter.
+        at = (viewport.x + viewport.width - 16, viewport.y + viewport.height // 2)
+        bounds = node.screen_bounds()
+        strata.pointer.scroll(
+            at, clicks=1, down=bounds.y + bounds.height > viewport.y + viewport.height
+        )
         return False
 
     strata.wait(revealed, f"reachable {name} control")
@@ -151,6 +156,27 @@ def test_custom_text_size_shortcuts_numeric_control_and_restart(strata, mode, re
     )
     if request.config.getoption("--keep-artifacts"):
         strata.screenshot(ArtifactCollector(test_name=f"text-size-{mode}").directory / "before.png")
+    strata.open_appearance_menu()
+    for name, pixels in [
+        ("Increase text size (Ctrl++)", "14"),
+        ("Decrease text size (Ctrl+−)", "13"),
+        ("Decrease text size (Ctrl+−)", "12"),
+        ("12 px", "13"),
+    ]:
+        button = strata.wait(
+            lambda: strata.window.find(role="button", name=name),
+            f"appearance text-size control {name}",
+        )
+        strata.pointer.click(button)
+        strata.wait(
+            lambda: strata.environment.read_preferences().get("text_size") == pixels,
+            f"appearance text-size control to persist {pixels}px",
+        )
+    if request.config.getoption("--keep-artifacts"):
+        strata.screenshot(
+            ArtifactCollector(test_name=f"text-size-{mode}").directory / "appearance.png"
+        )
+    strata.keyboard.press("Escape")
     strata.keyboard.press("F2")
     rename = strata.wait(
         lambda: strata.window.find(role="text", name="Rename"), "inline rename editor"

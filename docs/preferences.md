@@ -52,10 +52,12 @@ control that might be midway through synchronization.
 | Sort key/direction, folders-first | Shared defaults for new columns; an existing column keeps its own sort, selection and navigation. Sorting a column updates the persisted defaults. |
 | Type-to-search, opening search results directly | Keyboard/search actions read the current manager value at dispatch. |
 | Include subfolders | Every pane filter binds at construction, including lazy view rebuilds. Enabled by default; disabling indexes only immediate files and folders, without traversing descendants. Live changes cancel pending queries and invalidate old result streams before refreshing the active filter. Global search remains recursive. |
+| Element glow | Shared semantic glow color is applied by the manager before Settings opens and updated live across windows, dialogs, menus, and rebuilt views. Focus outlines and ordinary depth shadows are preserved. |
 | Reduced motion | Set before any window is constructed; animation helpers read the current process-wide value. |
 | Theme, Omarchy following, text size | Shared CSS is applied by the manager; controls and theme-card selections bind to preferences. Newly saved custom themes appear in other open theme pages. Missing themes/Omarchy use the existing fallback policy. |
 | Keybinding hints | Footers and settings controls bind immediately and live. |
 | Hardware video acceleration/backend | Preview providers read the current choice when requesting a preview; changing it does not restart an already playing file. Settings controls and backend availability synchronize live. |
+| Preview text wrap | Every text preview and header toggle binds to the saved wrap choice, including newly loaded files. Off by default. |
 | Preview mute/volume | Every player's controls and media stream bind to the saved audio state. Slider changes publish/persist together, without a delayed stale save overwriting another window or being discarded when closing a preview. |
 | Automatic updates, release channel | Eligibility checks read current preferences. Controls synchronize, and all windows clear outdated notices when these preferences change, even without opening Settings. A package-managed installation's tracked channel is enforced when read, not by constructing Settings. |
 | Sidebar order | Existing sidebars bind to the shared order. |
@@ -96,6 +98,14 @@ position remain independent of interface text size. At extreme sizes on small
 logical displays, scrolling or resizing panes may be necessary. Physical
 mixed-DPI monitor transitions still need compositor-specific manual testing.
 
+## Element glow
+
+In **Settings → Appearance → Effects**, turn off **Element glow** to remove
+accent-colored glow from dialogs, menus, controls, and animated feedback.
+It is enabled by default and saved as `element_glow = true`. Changes apply
+immediately across windows. Focus outlines, ordinary depth shadows, and animation
+movement are unchanged; use **Reduce motion** to disable nonessential animations.
+
 ## Filter scope
 
 In **Settings → General → Search & filtering**, **Include subfolders** is
@@ -103,14 +113,6 @@ on by default. Turn it off to match only immediate files and folders, without
 redundant path subtitles. The choice applies to pane filtering in Columns, Icons,
 and List views, not global search.
 Changing it refreshes active filters across windows and is saved for next launch.
-
-Default recursive results:
-
-![Filtering with subfolders included](images/filter-scope-recursive.png)
-
-The same query with subfolders excluded:
-
-![Filtering only the current directory](images/filter-scope-directory.png)
 
 ## Adding a preference
 

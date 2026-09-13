@@ -101,6 +101,8 @@ struct Preferences {
     show_keybinding_hints: bool,
     #[serde(default)]
     reduce_motion: bool,
+    #[serde(default = "default_enabled")]
+    element_glow: bool,
     #[serde(default = "default_browser_mode")]
     browser_mode: String,
     #[serde(default = "default_browser_density")]
@@ -138,6 +140,8 @@ struct Preferences {
     #[serde(default = "default_full_volume")]
     preview_volume: f64,
     #[serde(default)]
+    preview_text_wrap: bool,
+    #[serde(default)]
     auto_refresh_interval: u32,
     #[serde(default = "default_cross_volume_drop_strategy")]
     cross_volume_drop_strategy: String,
@@ -163,6 +167,7 @@ impl Default for Preferences {
             filter_include_subfolders: true,
             show_keybinding_hints: true,
             reduce_motion: false,
+            element_glow: true,
             browser_mode: default_browser_mode(),
             browser_density: default_browser_density(),
             group_by_type: false,
@@ -181,6 +186,7 @@ impl Default for Preferences {
             check_for_updates: true,
             preview_muted: false,
             preview_volume: default_full_volume(),
+            preview_text_wrap: false,
             auto_refresh_interval: 0,
             cross_volume_drop_strategy: default_cross_volume_drop_strategy(),
             release_channel: default_release_channel(),
@@ -530,6 +536,19 @@ impl ThemeManager {
         self.bind_preference(anchor, Self::show_keybinding_hints, refresh);
     }
 
+    pub fn element_glow(&self) -> bool {
+        self.preferences.borrow().element_glow
+    }
+
+    pub fn set_element_glow(&self, enabled: bool) {
+        if self.element_glow() == enabled {
+            return;
+        }
+        self.preferences.borrow_mut().element_glow = enabled;
+        self.apply_selected();
+        self.save_preferences();
+    }
+
     pub fn reduce_motion(&self) -> bool {
         self.preferences.borrow().reduce_motion
     }
@@ -564,6 +583,15 @@ impl ThemeManager {
 
     pub fn set_preview_volume(&self, volume: f64) {
         self.preferences.borrow_mut().preview_volume = normalized_volume(volume);
+        self.save_preferences();
+    }
+
+    pub fn preview_text_wrap(&self) -> bool {
+        self.preferences.borrow().preview_text_wrap
+    }
+
+    pub fn set_preview_text_wrap(&self, wrapped: bool) {
+        self.preferences.borrow_mut().preview_text_wrap = wrapped;
         self.save_preferences();
     }
 
@@ -921,8 +949,15 @@ impl ThemeManager {
     fn apply_tokens(&self, tokens: &ThemeTokens) {
         let root_font_px =
             snapped_root_font_px(self.text_size().root_font_px(), desktop_text_scale_factor());
-        self.provider
-            .load_from_string(&tokens_css(tokens, root_font_px));
+        let glow = if self.element_glow() {
+            "@theme_accent"
+        } else {
+            "transparent"
+        };
+        self.provider.load_from_string(&format!(
+            "{}\n@define-color theme_glow {glow};\n",
+            tokens_css(tokens, root_font_px)
+        ));
         apply_interface_font(root_font_px);
         crate::assets::set_interface_icon_scale(root_font_px / 13.0);
         crate::assets::set_primary_icon_color(&tokens.accent);
