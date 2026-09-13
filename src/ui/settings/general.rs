@@ -75,6 +75,12 @@ fn append_browsing_options(content: &gtk::Box, manager: &Rc<ThemeManager>) {
             read: ThemeManager::single_click_previews,
             write: ThemeManager::set_single_click_previews,
         },
+        PreferenceSwitch {
+            title: "Checkbox selection",
+            description: "Show a checkbox on each file to select multiple items without holding Ctrl or Shift.",
+            read: ThemeManager::checkbox_selection,
+            write: ThemeManager::set_checkbox_selection,
+        },
     ] {
         append_preference_switch(&browsing, manager, switch);
     }

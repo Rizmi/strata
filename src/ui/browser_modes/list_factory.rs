@@ -96,6 +96,15 @@ impl ListFactory {
                 true,
             ),
         );
+        let selection = self.selection.clone();
+        let item_position = item.position();
+        row.checkbox.connect_toggled(move |check| {
+            if check.is_active() {
+                selection.select_item(item_position, false);
+            } else {
+                selection.unselect_item(item_position);
+            }
+        });
     }
 
     fn binding(&self, item: &gtk::ListItem) -> Option<ListBinding> {
@@ -133,6 +142,8 @@ impl ListFactory {
             .and_then(Weak::upgrade)
             .and_then(|state| state.pending_rename_name(&binding.entry));
         row.bind_labels(item, &binding.entry, pending_name.as_deref());
+        let selected = self.selection.is_selected(item.position());
+        row.checkbox.set_active(selected);
         if self.scrolling.get() {
             set_label_if_changed(&row.modified, &crate::util::modified_date(&binding.entry));
         } else {
@@ -155,11 +166,12 @@ struct ListRow {
     size: gtk::Label,
     kind: gtk::Label,
     modified: gtk::Label,
+    checkbox: gtk::CheckButton,
 }
 
 impl ListRow {
     fn from_widget(widget: gtk::Box) -> Option<Self> {
-        let (icon, name, field, mode, size, kind, modified) = list_row_parts(&widget)?;
+        let (icon, name, field, mode, size, kind, modified, checkbox) = list_row_parts(&widget)?;
         let name_cell = widget.first_child()?;
         Some(Self {
             widget,
@@ -171,6 +183,7 @@ impl ListRow {
             size,
             kind,
             modified,
+            checkbox,
         })
     }
 

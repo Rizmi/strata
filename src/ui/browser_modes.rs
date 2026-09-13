@@ -210,6 +210,8 @@ struct PaneSection {
     syncing: Rc<Cell<bool>>,
     visit: super::marquee::ItemVisitor,
     item_context_trigger: Rc<dyn Fn(f64, f64)>,
+    select_all: Option<gtk::CheckButton>,
+    select_all_guard: Option<Rc<Cell<bool>>>,
 }
 
 type ListSorting = Rc<Cell<(SortKey, SortDirection)>>;
@@ -292,6 +294,7 @@ pub struct ModeViews {
     mode: BrowserMode,
     density: BrowserDensity,
     group_by_type: bool,
+    checkbox_selection: Cell<bool>,
     icons_thumbnail_size: Rc<Cell<i32>>,
     focus_before_header: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
     /// Page Up/Down scrolls the viewport itself; skip the follow-up `scroll_to`
@@ -368,6 +371,7 @@ impl ModeViews {
             mode: BrowserMode::Columns,
             density: BrowserDensity::Compact,
             group_by_type: false,
+            checkbox_selection: Cell::new(false),
             icons_thumbnail_size: Rc::new(Cell::new(DEFAULT_ICONS_THUMBNAIL_SIZE)),
             focus_before_header: RefCell::new(None),
             suppress_focus_scroll: Cell::new(false),
@@ -1002,6 +1006,23 @@ impl ModeViews {
         }
     }
 
+    pub fn set_checkbox_selection(&self, enabled: bool) {
+        self.checkbox_selection.set(enabled);
+        for pane in self.visible_panes() {
+            if let Some(check) = pane.section.select_all.as_ref() {
+                check.set_visible(enabled);
+            }
+            for bound in pane.section.bound_items.borrow().iter() {
+                if let Some(widget) = bound.widget.upgrade()
+                    && let Ok(row) = widget.downcast::<gtk::Box>()
+                    && let Some((_, _, _, _, _, _, _, checkbox)) = list_row_parts(&row)
+                {
+                    checkbox.set_visible(enabled);
+                }
+            }
+        }
+    }
+
     fn visible_panes(&self) -> Vec<&Pane> {
         match self.mode {
             BrowserMode::Columns => Vec::new(),
@@ -1406,6 +1427,7 @@ impl ModeViews {
         apply_snapshot(&pane, &snapshot, &self.browser);
         self.list_navigation.borrow_mut().prepare(&pane, &snapshot);
         self.list_pane = Some(pane);
+        self.set_checkbox_selection(self.checkbox_selection.get());
     }
 }
 
@@ -2046,6 +2068,8 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
         syncing: syncing_selection,
         visit: bound_item_visitor(bound_items),
         item_context_trigger: Rc::new(|_, _| {}),
+        select_all: None,
+        select_all_guard: None,
     };
     connect_selection(
         &section,
@@ -2246,9 +2270,31 @@ fn list_headings(
     browser: &Rc<Browser>,
     depth: usize,
     columns: ListColumnLayout,
-) -> (gtk::Box, ListSorting) {
+    selection: gtk::MultiSelection,
+) -> (gtk::Box, ListSorting, gtk::CheckButton, Rc<Cell<bool>>) {
     let headings = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     headings.add_css_class("list-headings");
+    let select_all = gtk::CheckButton::new();
+    select_all.add_css_class("row-checkbox");
+    select_all.add_css_class("select-all-checkbox");
+    select_all.set_tooltip_text(Some("Select all"));
+    select_all.set_visible(false);
+    let select_all_guard = Rc::new(Cell::new(false));
+    {
+        let selection = selection.clone();
+        let guard = select_all_guard.clone();
+        select_all.connect_toggled(move |check| {
+            if guard.get() {
+                return;
+            }
+            if check.is_active() {
+                selection.select_all();
+            } else {
+                selection.unselect_all();
+            }
+        });
+    }
+    headings.append(&select_all);
     let preferences = browser.column_preferences(depth).unwrap_or_default();
     let sorting = Rc::new(Cell::new((
         preferences.sort_key,
@@ -2347,7 +2393,7 @@ fn list_headings(
             });
         }
     });
-    (headings, sorting)
+    (headings, sorting, select_all, select_all_guard)
 }
 
 fn register_list_column_cell(
@@ -2566,7 +2612,8 @@ fn build_list_pane(
     let syncing_selection = Rc::new(Cell::new(false));
     let sections: Rc<RefCell<Vec<PaneSection>>> = Rc::new(RefCell::new(Vec::new()));
 
-    let (headings, sorting) = list_headings(&browser, depth, columns.clone());
+    let (headings, sorting, select_all, select_all_guard) =
+        list_headings(&browser, depth, columns.clone(), selection.clone());
 
     let bound_items = Rc::new(RefCell::new(Vec::new()));
     let scrolling = Rc::new(Cell::new(false));
@@ -2592,6 +2639,14 @@ fn build_list_pane(
     let view = gtk::ListView::new(Some(selection.clone()), Some(factory));
     view.add_css_class("file-list-mode");
     super::accessibility::describe_entry_container(&view, &pane_directory_name(&browser, depth));
+    {
+        let weak_view = view.downgrade();
+        select_all.connect_toggled(move |_| {
+            if let Some(view) = weak_view.upgrade() {
+                view.grab_focus();
+            }
+        });
+    }
     if options.group_by_type {
         view.set_header_factory(Some(&type_group_header_factory()));
     }
@@ -2625,6 +2680,8 @@ fn build_list_pane(
         syncing: syncing_selection,
         visit: bound_item_visitor(bound_items),
         item_context_trigger: Rc::new(|_, _| {}),
+        select_all: Some(select_all),
+        select_all_guard: Some(select_all_guard),
     };
     let browser_for_filter_activate = Rc::downgrade(&browser);
     let selection_for_filter_activate = section.selection.clone();
@@ -3568,6 +3625,7 @@ fn connect_selection(
     let syncing = section.syncing.clone();
     let weak_view = section.view.downgrade();
     let weak_bound_items = Rc::downgrade(&section.bound_items);
+    let weak_selection = section.selection.downgrade();
     let view_model = section.view_model.clone();
     let browser = Rc::downgrade(browser);
     section
@@ -3624,6 +3682,43 @@ fn connect_selection(
                 .filter(|position| selected_positions.contains(position));
             let focused = native_focus.or_else(|| selected_positions.last().copied());
             sync_browser_selection(&sections, &browser, depth, &source_index, focused);
+            if let Some(bound_items) = weak_bound_items.upgrade()
+                && let Some(selection) = weak_selection.upgrade()
+            {
+                let total = selection.n_items();
+                let selected_count = selection.selection().size() as u32;
+                for section in sections.borrow().iter() {
+                    let guard = section.select_all_guard.as_ref();
+                    if let Some(check) = section.select_all.as_ref() {
+                        if let Some(guard) = guard {
+                            guard.set(true);
+                        }
+                        check.set_inconsistent(false);
+                        check.set_active(selected_count > 0 && selected_count == total);
+                        if selected_count > 0 && selected_count < total {
+                            check.set_inconsistent(true);
+                        }
+                        if let Some(guard) = guard {
+                            guard.set(false);
+                        }
+                    }
+                }
+                for bound in bound_items.borrow().iter() {
+                    let Some(item) = bound.item.upgrade() else {
+                        continue;
+                    };
+                    let item_position = item.position();
+                    let selected = selection.is_selected(item_position);
+                    if let Some(widget) = bound.widget.upgrade()
+                        && let Ok(row) = widget.downcast::<gtk::Box>()
+                        && let Some((_, _, _, _, _, _, _, checkbox)) = list_row_parts(&row)
+                    {
+                        if checkbox.is_active() != selected {
+                            checkbox.set_active(selected);
+                        }
+                    }
+                }
+            }
         });
 }
 
@@ -3639,6 +3734,39 @@ fn set_selections(pane: &Pane, positions: &[usize]) {
             }
         }
         section.syncing.set(false);
+        sync_section_checkboxes(&section);
+    }
+}
+
+fn sync_section_checkboxes(section: &PaneSection) {
+    let total = section.selection.n_items();
+    let selected_count = section.selection.selection().size() as u32;
+    if let Some(check) = section.select_all.as_ref() {
+        let guard = section.select_all_guard.as_ref();
+        if let Some(guard) = guard {
+            guard.set(true);
+        }
+        check.set_inconsistent(false);
+        check.set_active(selected_count > 0 && selected_count == total);
+        if selected_count > 0 && selected_count < total {
+            check.set_inconsistent(true);
+        }
+        if let Some(guard) = guard {
+            guard.set(false);
+        }
+    }
+    for bound in section.bound_items.borrow().iter() {
+        let Some(item) = bound.item.upgrade() else {
+            continue;
+        };
+        let selected = section.selection.is_selected(item.position());
+        if let Some(widget) = bound.widget.upgrade()
+            && let Ok(row) = widget.downcast::<gtk::Box>()
+            && let Some((_, _, _, _, _, _, _, checkbox)) = list_row_parts(&row)
+            && checkbox.is_active() != selected
+        {
+            checkbox.set_active(selected);
+        }
     }
 }
 
@@ -3864,6 +3992,10 @@ fn assemble_list_row() -> gtk::Box {
     row.add_css_class("list-row");
     let name_cell = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     name_cell.add_css_class("list-name-cell");
+    let checkbox = gtk::CheckButton::new();
+    checkbox.add_css_class("row-checkbox");
+    checkbox.set_valign(gtk::Align::Center);
+    checkbox.set_visible(false);
     let icon = super::thumbnail::ThumbnailSlot::new(18);
     icon.add_css_class("list-file-icon");
     icon.set_valign(gtk::Align::Center);
@@ -3879,6 +4011,7 @@ fn assemble_list_row() -> gtk::Box {
     super::accessibility::set_label(&field, "Rename");
     field.set_hexpand(true);
     field.set_visible(false);
+    name_cell.append(&checkbox);
     name_cell.append(&icon);
     name_cell.append(&name);
     name_cell.append(&field);
@@ -3900,10 +4033,15 @@ fn list_row_parts(
     gtk::Label,
     gtk::Label,
     gtk::Label,
+    gtk::CheckButton,
 )> {
     let name_cell = row.first_child()?.downcast::<gtk::Box>().ok()?;
-    let icon = name_cell
+    let checkbox = name_cell
         .first_child()?
+        .downcast::<gtk::CheckButton>()
+        .ok()?;
+    let icon = checkbox
+        .next_sibling()?
         .downcast::<super::thumbnail::ThumbnailSlot>()
         .ok()?;
     let name = icon.next_sibling()?.downcast::<gtk::Label>().ok()?;
@@ -3912,7 +4050,7 @@ fn list_row_parts(
     let size = mode.next_sibling()?.downcast::<gtk::Label>().ok()?;
     let kind = size.next_sibling()?.downcast::<gtk::Label>().ok()?;
     let modified = kind.next_sibling()?.downcast::<gtk::Label>().ok()?;
-    Some((icon, name, field, mode, size, kind, modified))
+    Some((icon, name, field, mode, size, kind, modified, checkbox))
 }
 
 fn set_label_if_changed(label: &gtk::Label, text: &str) {
@@ -4079,7 +4217,7 @@ fn update_bound_list_metadata(pane: &Pane, updates: &[(usize, FileEntry)]) {
             let Some(row) = row.downcast::<gtk::Box>().ok() else {
                 return true;
             };
-            let Some((_, _, _, mode, size, _, modified)) = list_row_parts(&row) else {
+            let Some((_, _, _, mode, size, _, modified, _)) = list_row_parts(&row) else {
                 return true;
             };
             mode.set_label(&entry_mode(entry));
