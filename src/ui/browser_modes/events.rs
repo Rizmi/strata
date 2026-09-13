@@ -83,7 +83,20 @@ impl ModeViews {
     fn handle_rows_event(&self, event: &BrowserEvent, defer_empty: bool) -> bool {
         match event {
             BrowserEvent::EntriesInserted { depth, insertions } => {
-                self.update_panes(*depth, |pane| pane.insert_rows(insertions));
+                let camera = self
+                    .browser
+                    .location_at(*depth)
+                    .is_some_and(|location| location.is_camera_photo_root());
+                self.update_panes(*depth, |pane| {
+                    pane.insert_rows(insertions);
+                    if camera && pane.model.n_items() > 0 {
+                        reconnect_pane_model(pane);
+                        for section in pane.all_sections() {
+                            section.syncing.set(false);
+                        }
+                        show_count(pane);
+                    }
+                });
             }
             BrowserEvent::EntriesReplaced { depth, count } => {
                 self.update_panes(*depth, |pane| {

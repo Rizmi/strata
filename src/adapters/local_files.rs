@@ -23,6 +23,8 @@ use crate::{
     },
 };
 
+mod camera_photos;
+
 const LIST_ATTRIBUTES: &str = "standard::display-name,standard::name,standard::type,standard::is-hidden,standard::is-symlink,access::can-trash,access::can-delete";
 const FULL_ATTRIBUTES: &str = "standard::display-name,standard::name,standard::type,standard::is-hidden,standard::is-symlink,standard::size,standard::target-uri,time::modified,unix::mode,access::can-trash,access::can-delete";
 const METADATA_ATTRIBUTES: &str = "standard::type,standard::size,time::modified,unix::mode";
@@ -471,6 +473,9 @@ impl FileSource for LocalFileSource {
         if let Some(path) = location.native_path() {
             return enumerate_native(request, emit, started, path.to_path_buf());
         }
+        if location.is_camera_photo_root() {
+            return camera_photos::enumerate(request, emit);
+        }
 
         let task = glib::MainContext::default().spawn_local(async move {
             let directory = gio_file_for_location(&location);
@@ -779,6 +784,11 @@ impl FileSource for LocalFileSource {
                     Some(PendingMonitorChange::Rescan)
                 }
                 _ => Some(PendingMonitorChange::Rescan),
+            };
+            let change = if watched.is_camera_photo_root() {
+                Some(PendingMonitorChange::Rescan)
+            } else {
+                change
             };
             let Some(change) = change else {
                 return;

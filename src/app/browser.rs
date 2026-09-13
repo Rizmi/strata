@@ -2044,9 +2044,7 @@ impl Browser {
                     browser.emit(BrowserEvent::OperationFailed { message });
                 }
                 OperationEvent::TransferFailed { message, .. } => {
-                    for location in &refresh_locations {
-                        browser.refresh_columns_at(location);
-                    }
+                    browser.refresh_columns_at_many(&refresh_locations);
                     browser.emit(BrowserEvent::OperationFailed { message });
                 }
                 OperationEvent::CompletedWithErrors {
@@ -2111,11 +2109,11 @@ impl Browser {
                 OperationEvent::Renamed { .. } => {
                     browser.emit(BrowserEvent::RenameCompleted { request_id });
                     // Remote locations have no monitor to publish the authoritative rename.
-                    for location in &refresh_locations {
-                        if location.native_path().is_none() {
-                            browser.refresh_columns_at(location);
-                        }
-                    }
+                    browser.refresh_columns_at_many(
+                        refresh_locations
+                            .iter()
+                            .filter(|location| location.native_path().is_none()),
+                    );
                 }
                 OperationEvent::Compressed { archive_name, .. } => {
                     browser.emit(BrowserEvent::ArchiveCompleted {
@@ -2128,11 +2126,11 @@ impl Browser {
                     });
                 }
                 OperationEvent::Pasted { .. } => {
-                    for location in &refresh_locations {
-                        if location.native_path().is_none() {
-                            browser.refresh_columns_at(location);
-                        }
-                    }
+                    browser.refresh_columns_at_many(
+                        refresh_locations
+                            .iter()
+                            .filter(|location| location.native_path().is_none()),
+                    );
                     if reveal
                         && undoing.is_none()
                         && browser.validation_generation.get() == navigation_generation
@@ -2151,18 +2149,18 @@ impl Browser {
                     if browser.validation_generation.get() == navigation_generation {
                         browser.emit(BrowserEvent::EntryCreated { location });
                     }
-                    for location in &refresh_locations {
-                        if location.native_path().is_none() {
-                            browser.refresh_columns_at(location);
-                        }
-                    }
+                    browser.refresh_columns_at_many(
+                        refresh_locations
+                            .iter()
+                            .filter(|location| location.native_path().is_none()),
+                    );
                 }
                 OperationEvent::Created { .. } => {
-                    for location in &refresh_locations {
-                        if location.native_path().is_none() {
-                            browser.refresh_columns_at(location);
-                        }
-                    }
+                    browser.refresh_columns_at_many(
+                        refresh_locations
+                            .iter()
+                            .filter(|location| location.native_path().is_none()),
+                    );
                 }
                 OperationEvent::TransferProgress { .. }
                 | OperationEvent::DeleteProgress { .. }
@@ -3145,6 +3143,11 @@ impl Browser {
             .map(|preferences| preferences.sort_key)
             .unwrap_or_else(|| self.preferences.get().sort_key);
         let include_metadata = matches!(sort_key, SortKey::Size | SortKey::Modified);
+        let time_budget = if location.is_camera_photo_root() {
+            Duration::from_secs(120)
+        } else {
+            DIRECTORY_LOAD_TIME_BUDGET
+        };
         self.source.enumerate(
             DirectoryRequest {
                 id: request_id,
@@ -3152,19 +3155,30 @@ impl Browser {
                 batch_size,
                 include_metadata,
                 max_entries: MAX_DIRECTORY_ENTRIES,
-                time_budget: DIRECTORY_LOAD_TIME_BUDGET,
+                time_budget,
             },
             emit,
         )
     }
 
     pub(crate) fn refresh_columns_at(self: &Rc<Self>, location: &Location) {
+        self.refresh_columns_at_many([location]);
+    }
+
+    fn refresh_columns_at_many<'a>(
+        self: &Rc<Self>,
+        locations: impl IntoIterator<Item = &'a Location>,
+    ) {
+        let locations: Vec<_> = locations.into_iter().collect();
         let depths = {
             let state = self.state.borrow();
             let mut depths = Vec::new();
             let mut depth = 0;
             while let Some(open_location) = state.location_at(depth) {
-                if &open_location == location {
+                if locations.iter().any(|location| {
+                    &open_location == *location
+                        || open_location.contains_camera_photo_location(location)
+                }) {
                     depths.push(depth);
                 }
                 depth += 1;
@@ -3192,7 +3206,11 @@ impl Browser {
             locations
         };
         for (depth, location) in open_locations {
-            if location_or_ancestor_is_affected(&location, roots) {
+            if location_or_ancestor_is_affected(&location, roots)
+                || roots
+                    .iter()
+                    .any(|root| location.contains_camera_photo_location(root))
+            {
                 self.refresh_column(depth);
             }
         }
@@ -3204,9 +3222,7 @@ impl Browser {
                 .iter()
                 .filter_map(deletion_parent_location)
                 .collect();
-            for parent in parents {
-                self.refresh_columns_at(&parent);
-            }
+            self.refresh_columns_at_many(&parents);
             return;
         }
         for location in locations {
@@ -3218,17 +3234,19 @@ impl Browser {
                 let mut depths = Vec::new();
                 let mut depth = 0;
                 while let Some(open_location) = state.location_at(depth) {
-                    if open_location == parent {
-                        depths.push(depth);
+                    if open_location == parent
+                        || open_location.contains_camera_photo_location(location)
+                    {
+                        depths.push((depth, open_location));
                     }
                     depth += 1;
                 }
                 depths
             };
-            for depth in depths {
+            for (depth, watched) in depths {
                 self.handle_directory_change(
                     depth,
-                    &parent,
+                    &watched,
                     DirectoryChange::Remove(location.clone()),
                 );
             }

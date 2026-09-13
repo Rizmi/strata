@@ -3850,7 +3850,9 @@ fn apply_snapshot(pane: &Pane, snapshot: &BrowserColumnSnapshot, browser: &Brows
     pane.truncated_hint.set_visible(snapshot.truncated);
     if snapshot.loading {
         pane.spinner.start();
-        pane.loading.start();
+        if snapshot.count == 0 || !snapshot.location.is_camera_photo_root() {
+            pane.loading.start();
+        }
     } else {
         pane.spinner.stop();
         if let Some(message) = snapshot.error.as_deref() {

@@ -365,6 +365,22 @@ package names vary.
 
 After installing a backend, fully quit Strata (all windows) and reopen it.
 Reconnect the unlocked phone if necessary, then click its entry under **Devices**.
+The camera/PTP entry opens a single **Photos** view: files appear progressively
+from storage/date folders, prioritizing newer date-folder names, without requiring
+you to open each folder. The backend may finish a folder's metadata before
+returning its first batch. This is
+a virtual listing, not a reorganization of the phone. Duplicate filenames remain
+separate files with their original locations; use **Copy path** or **Properties**
+to distinguish their sources. Preview, copy, and delete act on those originals.
+This is the USB-exposed collection, not iOS's Albums hierarchy. The current
+backend does not provide album membership for a reliable Albums/Camera Roll split.
+
+Discovery reads metadata, not every photo's contents. It skips symlinks, preserves
+hidden-file filtering, and reports a partial listing if it reaches 100,000 files,
+4,096 directories, 16 nested levels, or two minutes. Refresh to rescan after a
+phone-side change; not every device supports live change notifications.
+
+Android MTP and iPhone app-document/AFC entries retain normal folder browsing.
 For Android, open **Internal storage** (the label varies by device).
 
 Still photos can use the preview pane or <kbd>Space</kbd> quick preview directly
@@ -372,7 +388,10 @@ from the phone. Strata downloads a temporary copy for sandboxed decoding, limite
 to 64 MiB and 30 seconds per image, with at most four active staged images per
 process. Closing or changing the preview cancels the request; temporary files are
 removed when their workers finish. Remote PDFs, animated GIFs, audio, and video
-still need a local copy for preview. File-list thumbnails are unchanged. See
+still need a local copy for preview. Camera/PTP thumbnails use small previews
+provided by the camera, with bounded retrieval and sandboxed decoding; if the
+camera cannot supply a thumbnail, Strata keeps the file icon instead of downloading
+the original. Camera thumbnails are cached only in memory. See
 [Remote still-image previews](docs/preview-sandbox.md#remote-still-image-previews)
 for cleanup, caching, and sandbox details.
 

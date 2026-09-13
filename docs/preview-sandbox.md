@@ -41,8 +41,22 @@ cache or the in-memory rendered-preview cache, and originals are never modified.
 Remote PDFs, animated GIFs, audio, and video remain unsupported: copy them locally
 first. In particular, remote PDF rendering/printing needs a shared document
 snapshot before it can safely request multiple pages without repeated downloads.
-This staging path does not enable remote file-list thumbnails. Supported still
-image formats continue to depend on installed sandbox decoder tools.
+Supported still-image formats continue to depend on installed sandbox decoder tools.
+
+### Camera file-list thumbnails
+
+Camera/PTP rows use the backend's `preview::icon` / `GLoadableIcon` interface.
+GVfs's gphoto2 implementation requests `GP_FILE_TYPE_PREVIEW`, not the original.
+Missing or failed previews leave the ordinary file icon; Strata does not fall
+back to downloading full photos for thumbnails.
+
+Retrieval is asynchronous, limited to 1 MiB and 15 seconds. These jobs share the
+existing four-worker, 64-waiting-job thumbnail queue and row-binding cancellation.
+The compressed preview is written to a random mode-0600 temporary file, decoded
+by the existing image-thumbnail sandbox, and removed after the decoder exits.
+Only the normalized PNG reaches GTK. Generated camera thumbnails use the bounded
+in-memory cache, never the persistent thumbnail cache. AFC and MTP file-list
+thumbnails are not enabled by this path.
 
 ## Incremental media playback
 
