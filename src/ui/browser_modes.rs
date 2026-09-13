@@ -2278,6 +2278,7 @@ fn list_headings(
     select_all.add_css_class("row-checkbox");
     select_all.add_css_class("select-all-checkbox");
     select_all.set_tooltip_text(Some("Select all"));
+    select_all.set_valign(gtk::Align::Center);
     select_all.set_visible(false);
     let select_all_guard = Rc::new(Cell::new(false));
     {
