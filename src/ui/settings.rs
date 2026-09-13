@@ -91,10 +91,16 @@ pub(super) fn install_guard() -> InstallGuard {
     INSTALL_GUARD.with(|guard| guard.clone())
 }
 
+type CachedUpdate = Option<(ReleaseMetadata, String, UpdateMethod)>;
+
 thread_local! {
     /// Shared by the due scheduler so every window uses one TTL.
     static LAST_COMPLETED_CHECK: Cell<Option<Instant>> = const { Cell::new(None) };
     static CHECK_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+    /// The most recent check result, shared across windows so a later window
+    /// shows the same notice without re-running the check. Cleared on a
+    /// no-update result so new windows also show nothing.
+    static LAST_UPDATE_RESULT: RefCell<CachedUpdate> = const { RefCell::new(None) };
 }
 
 /// Detection spawns a package-manager child, so it resolves asynchronously
@@ -182,10 +188,12 @@ pub(super) fn maybe_run_due_update_check(manager: &Rc<ThemeManager>, notice: &Up
                 }) => {
                     CHECK_IN_FLIGHT.set(false);
                     LAST_COMPLETED_CHECK.set(Some(Instant::now()));
+                    let result = Some((release, download_url, method));
+                    LAST_UPDATE_RESULT.with(|cache| *cache.borrow_mut() = result.clone());
                     if weak_manager.upgrade().is_some_and(|manager| {
                         manager.checks_for_updates() && manager.release_channel() == channel
                     }) {
-                        notice(Some((release, download_url, method)));
+                        notice(result);
                     }
                     glib::ControlFlow::Break
                 }
@@ -193,11 +201,33 @@ pub(super) fn maybe_run_due_update_check(manager: &Rc<ThemeManager>, notice: &Up
                     // Failed stays uncached so the next launch retries on transient errors.
                     CHECK_IN_FLIGHT.set(false);
                     LAST_COMPLETED_CHECK.set(Some(Instant::now()));
+                    LAST_UPDATE_RESULT.with(|cache| *cache.borrow_mut() = None);
                     glib::ControlFlow::Break
                 }
             }
         });
     });
+}
+
+/// Replays the most recent check result to a window that opened after the
+/// check completed, so every open window shows the same update notice.
+pub(super) fn replay_cached_update_notice(notice: &UpdateNoticeHandler) {
+    LAST_UPDATE_RESULT.with(|cache| {
+        if let Some(result) = cache.borrow().clone() {
+            notice(Some(result));
+        }
+    });
+}
+
+/// Clears the cached result so later windows do not show a stale notice
+/// after the user disables checks or switches the release channel.
+pub(super) fn clear_cached_update_notice() {
+    LAST_UPDATE_RESULT.with(|cache| *cache.borrow_mut() = None);
+}
+
+#[cfg(test)]
+pub(super) fn set_cached_update_notice_for_test(result: CachedUpdate) {
+    LAST_UPDATE_RESULT.with(|cache| *cache.borrow_mut() = result);
 }
 
 const DIALOG_WIDTH: i32 = 1400;
@@ -1504,12 +1534,20 @@ fn update_check_row(
                             UpdateCheck::Available {
                                 release,
                                 download_url,
-                            } => update_notice(Some((
-                                release.clone(),
-                                download_url.clone(),
-                                update_method,
-                            ))),
-                            UpdateCheck::UpToDate | UpdateCheck::Failed(_) => update_notice(None),
+                            } => {
+                                let cached =
+                                    Some((release.clone(), download_url.clone(), update_method));
+                                LAST_UPDATE_RESULT.with(|cache| *cache.borrow_mut() = cached);
+                                update_notice(Some((
+                                    release.clone(),
+                                    download_url.clone(),
+                                    update_method,
+                                )))
+                            }
+                            UpdateCheck::UpToDate | UpdateCheck::Failed(_) => {
+                                LAST_UPDATE_RESULT.with(|cache| *cache.borrow_mut() = None);
+                                update_notice(None)
+                            }
                         }
                         match &result {
                             UpdateCheck::Available {

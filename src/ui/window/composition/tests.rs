@@ -274,6 +274,60 @@ fn update_notices_clear_in_both_windows_without_opening_settings() {
 }
 
 #[test]
+fn cached_update_notice_replays_to_later_windows() {
+    gtk_test(
+        "ui::window::composition::tests::cached_update_notice_replays_to_later_windows",
+        || {
+            ThemeManager::seed_saved_preferences_for_test();
+            crate::ui::settings::clear_cached_update_notice();
+            let first = Fixture::new();
+            let release = ReleaseMetadata {
+                version: "9.0.0".into(),
+                url: "https://example.test/release".into(),
+                notes: String::new(),
+                note_blocks: Vec::new(),
+                kind: BuildKind::Stable,
+                tag: "v9.0.0".into(),
+                published_at: None,
+                commit: None,
+            };
+            (first.notice)(Some((
+                release.clone(),
+                "https://example.test/download".into(),
+                UpdateMethod::InPlace,
+            )));
+            crate::ui::settings::set_cached_update_notice_for_test(Some((
+                release.clone(),
+                "https://example.test/download".into(),
+                UpdateMethod::InPlace,
+            )));
+            assert!(first.content.sidebar.update_area.is_visible());
+            let second = Fixture::new();
+            crate::ui::settings::replay_cached_update_notice(&second.notice);
+            assert!(second.content.sidebar.update_area.is_visible());
+            assert_eq!(
+                second
+                    .content
+                    .sidebar
+                    .update_notice
+                    .tooltip_text()
+                    .as_deref(),
+                Some("Install Strata v9.0.0")
+            );
+            first.preferences.set_checks_for_updates(true);
+            assert!(!first.content.sidebar.update_area.is_visible());
+            assert!(!second.content.sidebar.update_area.is_visible());
+            let third = Fixture::new();
+            crate::ui::settings::replay_cached_update_notice(&third.notice);
+            assert!(!third.content.sidebar.update_area.is_visible());
+            first.close();
+            second.close();
+            third.close();
+        },
+    );
+}
+
+#[test]
 fn sidebar_toggle_preserves_split_constraints() {
     gtk_test(
         "ui::window::composition::tests::sidebar_toggle_preserves_split_constraints",

@@ -112,6 +112,7 @@ fn bind_update_notice_preferences(
             if !initial.replace(false)
                 && let Some(notice) = notice.upgrade()
             {
+                super::settings::clear_cached_update_notice();
                 notice(None);
             }
         },
@@ -205,6 +206,7 @@ fn schedule_due_update_check(
     manager: &Rc<ThemeManager>,
     notice: &super::settings::UpdateNoticeHandler,
 ) {
+    super::settings::replay_cached_update_notice(notice);
     let manager = manager.clone();
     let notice = notice.clone();
     glib::timeout_add_local_once(std::time::Duration::from_secs(8), move || {
