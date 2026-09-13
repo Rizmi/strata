@@ -8,7 +8,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -18,8 +17,9 @@ use rustix::process::{Pid, Signal, kill_process_group};
 
 use crate::services::MediaPreviewSize;
 
+pub(crate) mod media;
+
 const WALL_TIME_LIMIT: Duration = Duration::from_secs(12);
-const MEDIA_WALL_TIME_LIMIT: Duration = Duration::from_secs(30);
 const ADDRESS_SPACE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const FILE_SIZE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 const TEMPORARY_STORAGE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
@@ -56,6 +56,40 @@ impl MediaPreviewBackend {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct PdfRenderSize {
+    pub(crate) width: i32,
+    pub(crate) height: i32,
+}
+
+impl PdfRenderSize {
+    const MAX_WIDTH: i32 = 1_400;
+    const MAX_HEIGHT: i32 = 1_800;
+    const MAX_PIXELS: u64 = 2_500_000;
+
+    pub(crate) fn new(width: i32, height: i32) -> Self {
+        Self {
+            width: width.clamp(16, Self::MAX_WIDTH),
+            height: height.clamp(16, Self::MAX_HEIGHT),
+        }
+    }
+
+    pub(crate) fn for_viewport_width(width: i32) -> Self {
+        Self::new(width, Self::MAX_HEIGHT)
+    }
+
+    pub(crate) fn image_limits(self) -> (u32, u32, u64) {
+        let size = Self::new(self.width, self.height);
+        let width = size.width as u32;
+        let height = size.height as u32;
+        (
+            width,
+            height,
+            (u64::from(width) * u64::from(height)).min(Self::MAX_PIXELS),
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ParseOperation {
     ThumbnailImage,
@@ -63,7 +97,7 @@ pub(crate) enum ParseOperation {
     ThumbnailPdf,
     ThumbnailVideo,
     PreviewImage,
-    PreviewPdf,
+    PreviewPdf(PdfRenderSize),
     PreviewMedia(MediaPreviewSize),
 }
 
@@ -75,7 +109,7 @@ impl ParseOperation {
             Self::ThumbnailPdf => "thumbnail-pdf",
             Self::ThumbnailVideo => "thumbnail-video",
             Self::PreviewImage => "preview-image",
-            Self::PreviewPdf => "preview-pdf",
+            Self::PreviewPdf(_) => "preview-pdf",
             Self::PreviewMedia(_) => "preview-media",
         }
     }
@@ -92,14 +126,6 @@ impl ParseOperation {
         }
     }
 
-    fn wall_time_limit(self) -> Duration {
-        if self.is_media() {
-            MEDIA_WALL_TIME_LIMIT
-        } else {
-            WALL_TIME_LIMIT
-        }
-    }
-
     fn image_limits(self) -> Option<(u32, u32, u64)> {
         match self {
             Self::ThumbnailImage
@@ -107,7 +133,7 @@ impl ParseOperation {
             | Self::ThumbnailPdf
             | Self::ThumbnailVideo => Some((256, 256, 256 * 256)),
             Self::PreviewImage => Some((800, 800, 800 * 800)),
-            Self::PreviewPdf => Some((1_400, 1_800, 2_500_000)),
+            Self::PreviewPdf(size) => Some(size.image_limits()),
             Self::PreviewMedia(_) => None,
         }
     }
@@ -118,7 +144,7 @@ impl ParseOperation {
             | Self::ThumbnailRaw
             | Self::ThumbnailPdf
             | Self::PreviewImage
-            | Self::PreviewPdf => Some(MAX_RASTER_INPUT_BYTES),
+            | Self::PreviewPdf(_) => Some(MAX_RASTER_INPUT_BYTES),
             Self::ThumbnailVideo | Self::PreviewMedia(_) => None,
         }
     }
@@ -153,6 +179,9 @@ pub(crate) fn parse(
     if cancellation.is_cancelled() {
         return Err("Preview cancelled".to_owned());
     }
+    if operation.is_media() {
+        return Err("Media previews require a decoded-frame session".into());
+    }
     let input = input
         .canonicalize()
         .map_err(|error| format!("Unable to open preview input: {error}"))?;
@@ -174,11 +203,7 @@ pub(crate) fn parse(
     let running_executable = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
     let executable =
         resolve_renderer_executable(&current_executable, &running_executable, output.path())?;
-    let devices = if operation.is_media() {
-        gpu_devices(Path::new("/dev"), media_backend)
-    } else {
-        Vec::new()
-    };
+    let devices = Vec::new();
     let mut command = sandbox_command(
         &executable,
         &input,
@@ -189,37 +214,10 @@ pub(crate) fn parse(
         &devices,
     );
     command.stderr(Stdio::null());
-    if operation.is_media() {
-        command.stdout(Stdio::piped());
-    } else {
-        command.stdout(Stdio::null());
-    }
+    command.stdout(Stdio::null());
     let mut child = spawn_renderer(&mut command)
         .map_err(|error| format!("Unable to start the preview sandbox: {error}"))?;
-    if operation.is_media() {
-        let (status, data) = wait_for_renderer_output(
-            &mut child,
-            cancellation,
-            operation.wall_time_limit(),
-            MAX_OUTPUT_BYTES,
-        )?;
-        if !status.success() {
-            return Err("The sandboxed preview renderer failed".to_owned());
-        }
-        if data.is_empty() {
-            return Err("The preview renderer produced no output".to_owned());
-        }
-        if !valid_output(operation, &data) {
-            return Err("The preview renderer produced invalid media data".to_owned());
-        }
-        return Ok(ParseOutput {
-            data,
-            page: 0,
-            pages: 0,
-        });
-    }
-
-    let status = wait_for_renderer(&mut child, cancellation, operation.wall_time_limit())?;
+    let status = wait_for_renderer(&mut child, cancellation, WALL_TIME_LIMIT)?;
     if !status.success() {
         return Err("The sandboxed preview renderer failed".to_owned());
     }
@@ -305,82 +303,6 @@ fn wait_for_renderer(
                 return Err(format!("Unable to monitor the preview renderer: {error}"));
             }
         }
-    }
-}
-
-fn wait_for_renderer_output(
-    child: &mut Child,
-    cancellation: &Cancellation,
-    wall_time_limit: Duration,
-    max_bytes: u64,
-) -> Result<(ExitStatus, Vec<u8>), String> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Unable to capture preview renderer output".to_owned())?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let reader = thread::spawn(move || {
-        let mut data = Vec::new();
-        let result = stdout
-            .take(max_bytes.saturating_add(1))
-            .read_to_end(&mut data)
-            .map(|_| data);
-        let _sent = sender.send(result);
-    });
-    let started = Instant::now();
-    let deadline = started + wall_time_limit;
-    let pidfd = child_pidfd(child);
-    let mut status = None;
-    let mut output = None;
-    loop {
-        if cancellation.is_cancelled() {
-            terminate(child);
-            let _joined = reader.join();
-            return Err("Preview cancelled".to_owned());
-        }
-        if Instant::now() >= deadline {
-            terminate(child);
-            let _joined = reader.join();
-            return Err("The preview renderer timed out".to_owned());
-        }
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(current) => status = current,
-                Err(error) => {
-                    terminate(child);
-                    let _joined = reader.join();
-                    return Err(format!("Unable to monitor the preview renderer: {error}"));
-                }
-            }
-        }
-        if output.is_none() {
-            match receiver.try_recv() {
-                Ok(Ok(data)) if data.len() as u64 > max_bytes => {
-                    terminate(child);
-                    let _joined = reader.join();
-                    return Err("Preview provider output exceeded its limit".to_owned());
-                }
-                Ok(Ok(data)) => output = Some(data),
-                Ok(Err(error)) => {
-                    terminate(child);
-                    let _joined = reader.join();
-                    return Err(format!("Unable to read preview renderer output: {error}"));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    terminate(child);
-                    let _joined = reader.join();
-                    return Err("Unable to read preview renderer output".to_owned());
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(status) = status
-            && let Some(output) = output.take()
-        {
-            let _joined = reader.join();
-            return Ok((status, output));
-        }
-        wait_step(pidfd.as_ref(), deadline);
     }
 }
 
@@ -498,7 +420,14 @@ fn sandbox_command(
         command.arg(format!("{}x{}", size.width, size.height));
     } else {
         command.arg(format!("/output/{}", operation.output_name()));
-        command.arg(value.to_string());
+        let value = match operation {
+            ParseOperation::PreviewPdf(size) => {
+                let size = PdfRenderSize::new(size.width, size.height);
+                format!("{value}:{}x{}", size.width, size.height)
+            }
+            _ => value.to_string(),
+        };
+        command.arg(value);
     }
     command.arg(media_backend.argument());
     command
@@ -583,8 +512,7 @@ pub(crate) fn numbered_name(name: &std::ffi::OsStr, prefix: &str) -> bool {
 
 fn valid_output(operation: ParseOperation, data: &[u8]) -> bool {
     if operation.is_media() {
-        data.starts_with(b"\x1a\x45\xdf\xa3")
-            || data.get(4..8).is_some_and(|signature| signature == b"ftyp")
+        false
     } else {
         let Some((width, height)) = png_dimensions(data) else {
             return false;

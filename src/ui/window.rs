@@ -213,6 +213,25 @@ fn schedule_due_update_check(
         });
     });
 }
+pub(super) fn bind_sidebar_text_size(paned: &gtk::Paned) {
+    ThemeManager::shared().bind_interface_scale(paned, |widget, scale| {
+        let paned = widget.downcast_ref::<gtk::Paned>().expect("sidebar split");
+        if paned.position() > 0 {
+            paned.set_position(scaled_sidebar_width(paned, scale));
+        }
+    });
+}
+
+fn scaled_sidebar_width(paned: &gtk::Paned, scale: f64) -> i32 {
+    let preferred = (f64::from(SIDEBAR_WIDTH) * scale).round() as i32;
+    let available = if paned.width() > 0 {
+        paned.width() / 2
+    } else {
+        preferred
+    };
+    preferred.min(available).max(MIN_SIDEBAR_WIDTH)
+}
+
 fn animate_sidebar(
     paned: &gtk::Paned,
     sidebar: &gtk::Widget,
@@ -224,7 +243,11 @@ fn animate_sidebar(
     generation.set(animation_id);
     animating.set(true);
     paned.set_shrink_start_child(true);
-    let target = if expanded { SIDEBAR_WIDTH } else { 0 };
+    let target = if expanded {
+        scaled_sidebar_width(paned, ThemeManager::shared().interface_scale())
+    } else {
+        0
+    };
     let start = paned.position();
     if expanded {
         sidebar.set_visible(true);
@@ -435,6 +458,24 @@ pub(super) fn is_sidebar_focus_shortcut(
         && matches!(key, gtk::gdk::Key::b | gtk::gdk::Key::B)
 }
 
+pub(super) fn is_context_menu_shortcut(
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+) -> bool {
+    let modifiers = modifiers
+        & (gtk::gdk::ModifierType::SHIFT_MASK
+            | gtk::gdk::ModifierType::CONTROL_MASK
+            | gtk::gdk::ModifierType::ALT_MASK
+            | gtk::gdk::ModifierType::SUPER_MASK
+            | gtk::gdk::ModifierType::HYPER_MASK
+            | gtk::gdk::ModifierType::META_MASK);
+    match key {
+        gtk::gdk::Key::Menu => modifiers.is_empty(),
+        gtk::gdk::Key::F10 => modifiers == gtk::gdk::ModifierType::SHIFT_MASK,
+        _ => false,
+    }
+}
+
 fn sidebar_focus_direction(key: gtk::gdk::Key) -> Option<gtk::DirectionType> {
     match key {
         gtk::gdk::Key::Left => Some(gtk::DirectionType::Left),
@@ -503,6 +544,7 @@ pub(super) fn build_appearance_menu(
     view: &BrowserView,
     controller: &Rc<Browser>,
     preferences: Rc<super::theme::ThemeManager>,
+    preview: &super::preview::PreviewDrawer,
 ) -> gtk::MenuButton {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.add_css_class("appearance-menu");
@@ -599,6 +641,35 @@ pub(super) fn build_appearance_menu(
     content.append(&columns);
     content.append(&icons);
     content.append(&list);
+    let (row, check, _) = appearance_row(
+        crate::assets::icons::EYE,
+        "Preview panel",
+        "Space",
+        preview.is_enabled(),
+    );
+    let preview_toggle = gtk::ToggleButton::builder()
+        .child(&row)
+        .has_frame(false)
+        .build();
+    preview_toggle.add_css_class("appearance-option");
+    preview_toggle.add_css_class("preview-panel-option");
+    super::accessibility::set_label(&preview_toggle, "Preview panel");
+    preview_toggle.set_tooltip_text(Some("Toggle preview panel while browsing (Space)"));
+    let actions = gio::SimpleActionGroup::new();
+    actions.add_action(&preview.action());
+    preview_toggle.insert_action_group("preview", Some(&actions));
+    preview_toggle.set_action_name(Some("preview.preview-panel"));
+    preview_toggle
+        .bind_property("active", &check, "visible")
+        .sync_create()
+        .build();
+    let closing = popover_weak.clone();
+    preview_toggle.connect_clicked(move |_| {
+        if let Some(popover) = closing.upgrade() {
+            popover.popdown();
+        }
+    });
+    content.append(&preview_toggle);
 
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     append_menu_heading(&content, "DENSITY");
@@ -650,6 +721,36 @@ pub(super) fn build_appearance_menu(
     content.append(&airy);
 
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    append_menu_heading(&content, "TEXT SIZE");
+    let text_controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    for (label, tooltip, delta) in [
+        ("−", "Decrease text size (Ctrl+−)", -1),
+        ("+", "Increase text size (Ctrl++)", 1),
+    ] {
+        let button = gtk::Button::with_label(label);
+        button.add_css_class("appearance-option");
+        button.set_tooltip_text(Some(tooltip));
+        super::accessibility::set_label(&button, tooltip);
+        let manager = preferences.clone();
+        button.connect_clicked(move |_| manager.set_text_size(manager.text_size().stepped(delta)));
+        text_controls.append(&button);
+    }
+    let reset_size = gtk::Button::new();
+    reset_size.add_css_class("appearance-option");
+    reset_size.set_hexpand(true);
+    reset_size.set_tooltip_text(Some("Reset text size (Ctrl+0)"));
+    preferences.bind_preference(&reset_size, ThemeManager::text_size, |widget, size| {
+        widget
+            .downcast_ref::<gtk::Button>()
+            .expect("text size reset")
+            .set_label(&format!("{} px", size.root_font_px()));
+    });
+    let manager = preferences.clone();
+    reset_size.connect_clicked(move |_| manager.set_text_size(super::theme::TextSize::default()));
+    text_controls.append(&reset_size);
+    content.append(&text_controls);
+
+    content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     content.append(&group_by_type);
     let (hidden, hidden_check, hidden_icon) = appearance_option_with_shortcut(
         if hidden_files_shown {
@@ -687,7 +788,25 @@ pub(super) fn build_appearance_menu(
     });
     content.append(&hidden);
 
-    popover.set_child(Some(&content));
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_width(true)
+        .propagate_natural_height(true)
+        .max_content_height(600)
+        .child(&content)
+        .build();
+    let anchor = button.downgrade();
+    let constrained = scroll.downgrade();
+    popover.connect_show(move |_| {
+        if let (Some(anchor), Some(scroll)) = (anchor.upgrade(), constrained.upgrade())
+            && let Some(window) = anchor.root().and_downcast::<gtk::Window>()
+        {
+            scroll.set_max_content_height((window.height() - anchor.height() - 48).max(1));
+            scroll.set_max_content_width((window.width() - 24).max(1));
+        }
+    });
+    popover.set_child(Some(&scroll));
     button.set_child(Some(&button_icon));
     button.add_css_class("header-action");
     button.set_cursor_from_name(Some("pointer"));
@@ -718,6 +837,22 @@ fn appearance_option_with_shortcut(
     checked: bool,
     sensitive: bool,
 ) -> (gtk::Button, gtk::Image, gtk::Image) {
+    let (row, check, option) = appearance_row(icon, label, shortcut, checked);
+    let button = gtk::Button::builder()
+        .child(&row)
+        .sensitive(sensitive)
+        .build();
+    button.add_css_class("appearance-option");
+    button.set_has_frame(false);
+    (button, check, option)
+}
+
+fn appearance_row(
+    icon: &str,
+    label: &str,
+    shortcut: &str,
+    checked: bool,
+) -> (gtk::Box, gtk::Image, gtk::Image) {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let check = crate::assets::primary_icon(crate::assets::icons::CHECK, 16);
     check.set_visible(checked);
@@ -733,13 +868,7 @@ fn appearance_option_with_shortcut(
         row.append(&shortcut);
     }
     row.append(&check);
-    let button = gtk::Button::builder()
-        .child(&row)
-        .sensitive(sensitive)
-        .build();
-    button.add_css_class("appearance-option");
-    button.set_has_frame(false);
-    (button, check, option)
+    (row, check, option)
 }
 
 fn append_menu_heading(container: &gtk::Box, text: &str) {
@@ -814,7 +943,7 @@ fn trash_contents_from_probe(probe: Result<bool, glib::Error>) -> TrashContents 
 fn event_changes_trash_contents(event: &BrowserEvent) -> bool {
     matches!(
         event,
-        BrowserEvent::DeletionFinished
+        BrowserEvent::DeletionFinished { .. }
             | BrowserEvent::RestorationFinished
             | BrowserEvent::TransferFinished { .. }
             | BrowserEvent::OperationCompletedWithErrors { .. }
@@ -1019,6 +1148,7 @@ impl SidebarState {
             BrowserEvent::Reset
                 | BrowserEvent::ColumnAdded { .. }
                 | BrowserEvent::ColumnsTruncated { .. }
+                | BrowserEvent::ColumnsRelocated { .. }
                 | BrowserEvent::FocusChanged { .. }
         )
     }
@@ -1139,6 +1269,7 @@ impl SidebarState {
         self.apply_trash_menu_visibility();
         self.watch_trash();
         self.refresh_trash_contents();
+        self.view.set_trash_button(row.clone());
         let popover = gtk::Popover::builder()
             .child(&menu)
             .autohide(true)
@@ -1555,6 +1686,10 @@ fn install_sidebar_file_drop(
     row: &impl IsA<gtk::Widget>,
     destination: Location,
 ) {
+    if destination == Location::uri("trash:///") {
+        install_sidebar_trash_drop(view, row);
+        return;
+    }
     if !sidebar_accepts_file_drop(&destination) {
         return;
     }
@@ -1582,6 +1717,39 @@ fn install_sidebar_file_drop(
         let commit = file_drop_commit(target, &destination, &sources, &drop_state);
         view.commit_file_drop(destination.clone(), sources, commit);
         true
+    });
+    row.add_controller(drop);
+}
+
+fn trash_file_drop_action(target: &gtk::DropTarget) -> gtk::gdk::DragAction {
+    if target.value().as_ref().is_some_and(|value| {
+        locations_from_file_list_value(value)
+            .is_none_or(|sources| !BrowserView::can_trash_file_drop(&sources))
+    }) {
+        gtk::gdk::DragAction::empty()
+    } else {
+        gtk::gdk::DragAction::MOVE
+    }
+}
+
+fn install_sidebar_trash_drop(view: &BrowserView, row: &impl IsA<gtk::Widget>) {
+    row.add_css_class("file-drop-zone");
+    let drop = gtk::DropTarget::new(
+        gtk::gdk::FileList::static_type(),
+        gtk::gdk::DragAction::MOVE,
+    );
+    drop.set_preload(true);
+    drop.set_propagation_phase(gtk::PropagationPhase::Capture);
+    drop.connect_enter(|target, _, _| trash_file_drop_action(target));
+    drop.connect_motion(|target, _, _| trash_file_drop_action(target));
+    drop.connect_value_notify(|target| {
+        if let Some(offered) = target.current_drop() {
+            offered.status(target.actions(), trash_file_drop_action(target));
+        }
+    });
+    let view = view.clone();
+    drop.connect_drop(move |_, value, _, _| {
+        locations_from_file_list_value(value).is_some_and(|sources| view.trash_file_drop(sources))
     });
     row.add_controller(drop);
 }

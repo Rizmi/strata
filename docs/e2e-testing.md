@@ -722,6 +722,15 @@ Review and commit the changes. Reports must cover every test and shard; partial 
 failed runs cannot overwrite scheduling measurements. Durations are scheduling
 hints, never an allowlist: new tests always participate without editing this file.
 
+### Maintaining behavioral coverage
+
+Before consolidating tests, identify the retained behavioral owner for every
+assertion. Fewer test functions or collected cases do not establish a runtime
+improvement. Preserve functional layout, input-routing, filesystem-safety,
+live-preference and lifecycle regressions, even when they share fixtures.
+Record task-specific inventories and consolidation decisions in the issue or PR,
+not in a committed audit report.
+
 ### Coverage audit (#607)
 
 154 GUI cases were removed from the 729-test inventory (six new harness tests

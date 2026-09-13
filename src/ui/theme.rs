@@ -101,6 +101,8 @@ struct Preferences {
     show_keybinding_hints: bool,
     #[serde(default)]
     reduce_motion: bool,
+    #[serde(default = "default_enabled")]
+    element_glow: bool,
     #[serde(default = "default_browser_mode")]
     browser_mode: String,
     #[serde(default = "default_browser_density")]
@@ -123,8 +125,8 @@ struct Preferences {
     sidebar_order: Vec<String>,
     #[serde(default)]
     show_hidden: bool,
-    #[serde(default = "default_text_size")]
-    text_size: String,
+    #[serde(default)]
+    text_size: TextSize,
     #[serde(default = "default_enabled")]
     folders_first: bool,
     #[serde(default = "default_sort_key")]
@@ -137,6 +139,8 @@ struct Preferences {
     preview_muted: bool,
     #[serde(default = "default_full_volume")]
     preview_volume: f64,
+    #[serde(default)]
+    preview_text_wrap: bool,
     #[serde(default)]
     auto_refresh_interval: u32,
     #[serde(default = "default_cross_volume_drop_strategy")]
@@ -163,6 +167,7 @@ impl Default for Preferences {
             filter_include_subfolders: true,
             show_keybinding_hints: true,
             reduce_motion: false,
+            element_glow: true,
             browser_mode: default_browser_mode(),
             browser_density: default_browser_density(),
             group_by_type: false,
@@ -174,13 +179,14 @@ impl Default for Preferences {
             list_folder_clicks: default_double_clicks(),
             sidebar_order: default_sidebar_order(),
             show_hidden: false,
-            text_size: default_text_size(),
+            text_size: TextSize::default(),
             folders_first: true,
             sort_key: default_sort_key(),
             sort_direction: default_sort_direction(),
             check_for_updates: true,
             preview_muted: false,
             preview_volume: default_full_volume(),
+            preview_text_wrap: false,
             auto_refresh_interval: 0,
             cross_volume_drop_strategy: default_cross_volume_drop_strategy(),
             release_channel: default_release_channel(),
@@ -198,46 +204,8 @@ fn default_release_channel() -> String {
     "stable".to_owned()
 }
 
-fn default_text_size() -> String {
-    TextSize::default().as_str().to_owned()
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum TextSize {
-    Small,
-    #[default]
-    Medium,
-    Large,
-}
-
-impl TextSize {
-    /// The persisted/config-file representation of this size.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TextSize::Small => "small",
-            TextSize::Medium => "medium",
-            TextSize::Large => "large",
-        }
-    }
-
-    /// Parses a persisted text size value, falling back to [`TextSize::Medium`]
-    /// for anything unrecognised.
-    pub fn parse(value: &str) -> TextSize {
-        match value {
-            "small" => TextSize::Small,
-            "large" => TextSize::Large,
-            _ => TextSize::Medium,
-        }
-    }
-
-    fn root_font_px(self) -> u32 {
-        match self {
-            TextSize::Small => 11,
-            TextSize::Medium => 13,
-            TextSize::Large => 15,
-        }
-    }
-}
+mod text_size;
+pub use text_size::TextSize;
 
 fn default_browser_mode() -> String {
     "columns".to_owned()
@@ -568,6 +536,19 @@ impl ThemeManager {
         self.bind_preference(anchor, Self::show_keybinding_hints, refresh);
     }
 
+    pub fn element_glow(&self) -> bool {
+        self.preferences.borrow().element_glow
+    }
+
+    pub fn set_element_glow(&self, enabled: bool) {
+        if self.element_glow() == enabled {
+            return;
+        }
+        self.preferences.borrow_mut().element_glow = enabled;
+        self.apply_selected();
+        self.save_preferences();
+    }
+
     pub fn reduce_motion(&self) -> bool {
         self.preferences.borrow().reduce_motion
     }
@@ -602,6 +583,15 @@ impl ThemeManager {
 
     pub fn set_preview_volume(&self, volume: f64) {
         self.preferences.borrow_mut().preview_volume = normalized_volume(volume);
+        self.save_preferences();
+    }
+
+    pub fn preview_text_wrap(&self) -> bool {
+        self.preferences.borrow().preview_text_wrap
+    }
+
+    pub fn set_preview_text_wrap(&self, wrapped: bool) {
+        self.preferences.borrow_mut().preview_text_wrap = wrapped;
         self.save_preferences();
     }
 
@@ -692,13 +682,48 @@ impl ThemeManager {
     }
 
     pub fn text_size(&self) -> TextSize {
-        TextSize::parse(&self.preferences.borrow().text_size)
+        self.preferences.borrow().text_size
     }
 
     pub fn set_text_size(&self, size: TextSize) {
-        self.preferences.borrow_mut().text_size = size.as_str().to_owned();
+        if self.text_size() == size {
+            self.save_preferences();
+            return;
+        }
+        self.preferences.borrow_mut().text_size = size;
         self.apply_selected();
         self.save_preferences();
+    }
+
+    pub fn interface_scale(&self) -> f64 {
+        snapped_root_font_px(self.text_size().root_font_px(), desktop_text_scale_factor()) / 13.0
+    }
+
+    pub fn bind_interface_scale(
+        self: &Rc<Self>,
+        anchor: &impl IsA<gtk::Widget>,
+        apply: impl Fn(&gtk::Widget, f64) + 'static,
+    ) {
+        let apply = Rc::new(apply);
+        let changed = apply.clone();
+        self.bind_preference(anchor, Self::interface_scale, move |widget, scale| {
+            changed(widget, scale)
+        });
+        if let Some(settings) = gtk::Settings::default() {
+            let widget = anchor.downgrade();
+            let manager = Rc::downgrade(self);
+            let handler = settings.connect_gtk_xft_dpi_notify(move |_| {
+                if let (Some(widget), Some(manager)) = (widget.upgrade(), manager.upgrade()) {
+                    apply(widget.upcast_ref(), manager.interface_scale());
+                }
+            });
+            let handler = RefCell::new(Some(handler));
+            anchor.connect_destroy(move |_| {
+                if let Some(handler) = handler.borrow_mut().take() {
+                    settings.disconnect(handler);
+                }
+            });
+        }
     }
 
     pub fn group_by_type(&self) -> bool {
@@ -877,6 +902,15 @@ impl ThemeManager {
         Ok(id)
     }
 
+    pub fn appearance_tokens(&self) -> ThemeTokens {
+        if self.follows_omarchy()
+            && let Some(tokens) = load_omarchy_theme()
+        {
+            return tokens;
+        }
+        self.starter_tokens()
+    }
+
     pub fn starter_tokens(&self) -> ThemeTokens {
         self.current_tokens().unwrap_or_else(azure_tokens)
     }
@@ -915,9 +949,17 @@ impl ThemeManager {
     fn apply_tokens(&self, tokens: &ThemeTokens) {
         let root_font_px =
             snapped_root_font_px(self.text_size().root_font_px(), desktop_text_scale_factor());
-        self.provider
-            .load_from_string(&tokens_css(tokens, root_font_px));
+        let glow = if self.element_glow() {
+            "@theme_accent"
+        } else {
+            "transparent"
+        };
+        self.provider.load_from_string(&format!(
+            "{}\n@define-color theme_glow {glow};\n",
+            tokens_css(tokens, root_font_px)
+        ));
         apply_interface_font(root_font_px);
+        crate::assets::set_interface_icon_scale(root_font_px / 13.0);
         crate::assets::set_primary_icon_color(&tokens.accent);
         crate::assets::set_danger_icon_color(&tokens.danger);
         super::thumbnail::refresh_all_customized_icons();
@@ -1002,6 +1044,7 @@ impl ThemeManager {
                 manager.pending_omarchy_refresh.borrow_mut().take();
                 if manager.follows_omarchy() && !manager.previewing.get() {
                     manager.apply_selected();
+                    manager.changes.notify(&manager);
                 }
             });
             manager.pending_omarchy_refresh.replace(Some(refresh));
@@ -1370,12 +1413,21 @@ fn snapped_root_font_px(root_font_px: u32, scale_factor: f64) -> f64 {
     if !scale_factor.is_finite() || scale_factor <= 0.0 {
         return f64::from(root_font_px);
     }
-    // Fractional effective pixels can lose hinted glyph rows in GTK's text renderer.
-    (f64::from(root_font_px) * scale_factor).round() / scale_factor
+    // CSS px bypass Xft DPI. Apply desktop text scaling here, once; GTK applies
+    // the surface's monitor scale independently. Keep hinted glyph rows whole.
+    (f64::from(root_font_px) * scale_factor).round()
 }
 
 fn tokens_css(tokens: &ThemeTokens, root_font_px: f64) -> String {
-    format!(
+    let scale = root_font_px / 13.0;
+    let header = (40.0 * scale).round();
+    // Column headers add six pixels of padding and three extra border pixels.
+    let column_header = header - 9.0;
+    let control = (24.0 * scale).round();
+    let sizing = format!(
+        "headerbar, headerbar > windowhandle > box, .mode-pane-header, .preview-header {{ min-height: {header}px; }}\n.column-header {{ min-height: {column_header}px; }}\nheaderbar .sidebar-toggle, headerbar button.header-action, headerbar menubutton.header-action > button, .preview-header-action, button.column-header-action, menubutton.column-header-action > button {{ min-width: {control}px; min-height: {control}px; }}\n"
+    );
+    let colors = format!(
         "@define-color theme_bg {};\n@define-color theme_surface {};\n@define-color theme_text {};\n@define-color theme_accent {};\n@define-color theme_danger {};\n@define-color theme_muted {};\n@define-color theme_highlight {};\n@define-color theme_border {};\n@define-color theme_dim_text {};\nwindow, popover, popover.background {{ font-size: {root_font_px:.6}px; }}\n",
         tokens.background,
         tokens.surface,
@@ -1386,7 +1438,8 @@ fn tokens_css(tokens: &ThemeTokens, root_font_px: f64) -> String {
         tokens.highlight,
         tokens.border,
         tokens.dim_text,
-    )
+    );
+    colors + &sizing
 }
 
 /// Parses colours GTK accepts (`#rgb`, `#rrggbb`, `rgb(...)`, names) into 8-bit

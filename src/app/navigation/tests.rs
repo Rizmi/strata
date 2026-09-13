@@ -506,6 +506,82 @@ fn monitor_moves_follow_the_selected_entry() {
 }
 
 #[test]
+fn relocating_a_column_preserves_selection_preferences_and_active_depth() {
+    let mut state = NavigationState::default();
+    state.navigate(location("/home"), RequestId(1));
+    state.apply_batch(RequestId(1), vec![named_entry("/home/old", "old")]);
+    state.select(0, 0);
+    state.descend(0, location("/home/old"), RequestId(2));
+    state.apply_batch(
+        RequestId(2),
+        vec![
+            named_entry("/home/old/one", "one"),
+            named_entry("/home/old/two", "two"),
+        ],
+    );
+    state.set_selection(1, &[0, 1], Some(1));
+    let preferences = ViewPreferences {
+        sort_direction: SortDirection::Descending,
+        ..ViewPreferences::default()
+    };
+    state.apply_sort_preferences(1, preferences);
+    state.focus_column(0);
+
+    state.relocate_column(1, location("/home/renamed"), RequestId(3));
+    assert_eq!(state.active_depth(), Some(0));
+    assert_eq!(state.selected_positions(0), [0]);
+    assert_eq!(state.column_preferences(1), Some(preferences));
+    assert!(
+        state
+            .apply_batch(RequestId(2), vec![named_entry("/home/old/stale", "stale")])
+            .is_none()
+    );
+    state.apply_batch(
+        RequestId(3),
+        vec![
+            named_entry("/home/renamed/one", "one"),
+            named_entry("/home/renamed/two", "two"),
+        ],
+    );
+    assert_eq!(state.selected_positions(1), [0, 1]);
+    let column = &state.columns[1];
+    assert_eq!(
+        column.entries[column.selected.expect("keyboard cursor")].display_name,
+        "two"
+    );
+    assert!(
+        column
+            .selection_anchor
+            .as_ref()
+            .expect("selection anchor")
+            .is_within(&location("/home/renamed"))
+    );
+}
+
+#[test]
+fn a_rename_rebases_the_pending_selection_during_a_refresh() {
+    let mut state = NavigationState::default();
+    state.navigate(location("/home"), RequestId(1));
+    state.apply_batch(RequestId(1), vec![named_entry("/home/old", "old")]);
+    state.select(0, 0);
+    state.reload_column(0, RequestId(2));
+    state.apply_directory_change(
+        0,
+        &location("/home"),
+        DirectoryChange::Move {
+            from: location("/home/old"),
+            entry: named_entry("/home/new", "new"),
+        },
+    );
+    state.install_snapshot(RequestId(2), vec![named_entry("/home/new", "new")]);
+    assert_eq!(state.selected_positions(0), [0]);
+    assert_eq!(
+        state.focused_entry().expect("focused entry").2.location,
+        location("/home/new")
+    );
+}
+
+#[test]
 fn external_moves_rebase_open_descendant_locations() {
     let mut state = NavigationState::default();
     state.navigate(location("/home"), RequestId(1));
@@ -622,6 +698,72 @@ fn reload_clears_the_resolved_delete_capability() {
 
     state.reload_column(0, RequestId(2));
     assert_eq!(state.can_delete_at(0), None);
+}
+
+#[test]
+fn reload_restores_a_multi_selection_after_snapshot() {
+    let mut state = NavigationState::default();
+    listing_without_a_load_cursor(&mut state);
+    assert!(state.set_selection(0, &[0, 2], Some(2)));
+
+    state.reload_column(0, RequestId(2));
+    assert!(state.selected_positions(0).is_empty());
+    assert_eq!(
+        state.install_snapshot(
+            RequestId(2),
+            vec![
+                named_entry("/fixture/alpha", "alpha"),
+                named_entry("/fixture/bravo", "bravo"),
+                named_entry("/fixture/charlie", "charlie"),
+            ],
+        ),
+        Some(0)
+    );
+
+    assert_eq!(state.selected_positions(0), [0, 2]);
+    assert_eq!(state.active_focus(), Some((0, Some(2))));
+}
+
+#[test]
+fn reload_does_not_select_an_unselected_focus() {
+    for positions in [vec![], vec![0, 1]] {
+        let mut state = NavigationState::default();
+        listing_without_a_load_cursor(&mut state);
+        assert!(state.set_selection(0, &positions, Some(2)));
+        state.reload_column(0, RequestId(2));
+        state.install_snapshot(
+            RequestId(2),
+            vec![
+                named_entry("/fixture/alpha", "alpha"),
+                named_entry("/fixture/bravo", "bravo"),
+                named_entry("/fixture/charlie", "charlie"),
+            ],
+        );
+        assert_eq!(state.selected_positions(0), positions);
+        assert_eq!(state.active_focus(), Some((0, Some(2))));
+    }
+}
+
+#[test]
+fn reload_drops_selection_members_that_left_the_listing() {
+    let mut state = NavigationState::default();
+    listing_without_a_load_cursor(&mut state);
+    assert!(state.set_selection(0, &[0, 2], Some(2)));
+
+    state.reload_column(0, RequestId(2));
+    assert_eq!(
+        state.install_snapshot(
+            RequestId(2),
+            vec![
+                named_entry("/fixture/alpha", "alpha"),
+                named_entry("/fixture/bravo", "bravo"),
+            ],
+        ),
+        Some(0)
+    );
+
+    assert_eq!(state.selected_positions(0), [0]);
+    assert_eq!(state.active_focus(), Some((0, Some(0))));
 }
 
 #[test]
@@ -993,6 +1135,34 @@ fn names_that_differ_only_by_case_have_a_deterministic_order() {
         compare_display_names("Straße", "STRASSE"),
         Ordering::Greater
     );
+}
+
+#[test]
+fn numeric_suffixes_sort_naturally() {
+    for (left, right) in [
+        ("File 1", "File 2"),
+        ("File 2", "File 10"),
+        ("File 1", "File 10"),
+        ("File 99999999999999999999", "File 100000000000000000000"),
+        ("File 0002", "File 10"),
+        ("File 02", "File 2"),
+        ("File 0", "File 00"),
+        ("file 2 part 9", "File 2 part 10"),
+        ("Straße 2", "STRASSE 10"),
+        ("File 2", "File 2a"),
+    ] {
+        assert_eq!(
+            compare_display_names(left, right),
+            Ordering::Less,
+            "{left} < {right}"
+        );
+        assert_eq!(
+            compare_display_names(right, left),
+            Ordering::Greater,
+            "{right} > {left}"
+        );
+        assert_eq!(compare_display_names(left, left), Ordering::Equal);
+    }
 }
 
 #[test]
