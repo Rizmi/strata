@@ -367,6 +367,15 @@ After installing a backend, fully quit Strata (all windows) and reopen it.
 Reconnect the unlocked phone if necessary, then click its entry under **Devices**.
 For Android, open **Internal storage** (the label varies by device).
 
+Still photos can use the preview pane or <kbd>Space</kbd> quick preview directly
+from the phone. Strata downloads a temporary copy for sandboxed decoding, limited
+to 64 MiB and 30 seconds per image, with at most four active staged images per
+process. Closing or changing the preview cancels the request; temporary files are
+removed when their workers finish. Remote PDFs, animated GIFs, audio, and video
+still need a local copy for preview. File-list thumbnails are unchanged. See
+[Remote still-image previews](docs/preview-sandbox.md#remote-still-image-previews)
+for cleanup, caching, and sandbox details.
+
 If the phone is missing, check the backend package, try another data cable or USB
 port, and confirm the trust/file-transfer setting. On Arch/Omarchy, `lsusb` (from
 `usbutils`) can confirm USB detection, but detection alone does not establish file

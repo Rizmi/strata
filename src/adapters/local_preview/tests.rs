@@ -2,6 +2,8 @@
 
 use std::{fs, time::Duration};
 
+mod remote_preview;
+
 use super::*;
 use crate::services::{MediaPreviewSize, PreviewContent};
 

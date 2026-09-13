@@ -147,20 +147,20 @@ fn printing_is_offered_for_text_code_images_and_pdfs() {
         )));
     }
 
-    for (name, supported) in [
-        ("notes.txt", true),
-        ("main.rs", true),
-        ("photo.png", false),
-        ("guide.pdf", false),
+    for (name, printable, previewable) in [
+        ("notes.txt", true, true),
+        ("main.rs", true, true),
+        ("photo.png", false, true),
+        ("guide.pdf", false, false),
     ] {
         let trashed = FileEntry {
             location: Location::uri(format!("trash:///{name}")),
             ..entry(name, crate::model::EntryKind::File)
         };
-        assert_eq!(entry_supports_printing(&trashed), supported, "{name}");
+        assert_eq!(entry_supports_printing(&trashed), printable, "{name}");
         assert_eq!(
             crate::ui::preview::entry_supports_quick_preview(&trashed),
-            supported,
+            previewable,
             "{name}"
         );
     }

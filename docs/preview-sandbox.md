@@ -14,6 +14,36 @@ parsing and decoding run inside bubblewrap, never in the application.
 - Plain text stays in-process, invokes no native format parser, and is capped at
   1 MiB.
 
+## Remote still-image previews
+
+Still images on GIO/GVfs locations (including phone camera, AFC, and MTP storage)
+can use the preview pane and Space quick preview. The application streams the
+selected original to a randomly named mode-0600 temporary file before invoking
+the same image sandbox as local files. Only a short alphanumeric extension is
+preserved; remote names never choose a local path. The displayed entry and its
+actions retain the original URI.
+
+Each transfer has a 64-MiB byte limit and a 30-second total deadline. Known
+oversized files are rejected before opening; the stream limit also applies when
+size metadata is missing or inaccurate. At most four transfers/staged originals
+can be active per process, including ones waiting for cancellation or decoding.
+A busy request fails with an explanatory message rather than starting another
+unbounded transfer. Downloads run off the GTK thread.
+
+Changing selection or closing the preview cancels GIO. A backend that is slow to
+acknowledge cancellation retains its slot until its worker exits. Partial files
+are removed on transfer failure; successful inputs remain owned by the decoder
+worker and are removed when it exits, even if the UI has already cancelled the
+request. Normal cleanup does not guarantee removal after a process crash or
+forced termination. Remote previews do not populate the persistent thumbnail
+cache or the in-memory rendered-preview cache, and originals are never modified.
+
+Remote PDFs, animated GIFs, audio, and video remain unsupported: copy them locally
+first. In particular, remote PDF rendering/printing needs a shared document
+snapshot before it can safely request multiple pages without repeated downloads.
+This staging path does not enable remote file-list thumbnails. Supported still
+image formats continue to depend on installed sandbox decoder tools.
+
 ## Incremental media playback
 
 ```text
