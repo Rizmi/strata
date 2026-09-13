@@ -56,7 +56,7 @@ pub(super) fn settings_row() -> gtk::Box {
     row.add_css_class("settings-option");
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
     copy.set_hexpand(true);
-    let title = gtk::Label::new(Some("System file chooser"));
+    let title = gtk::Label::new(Some("System file manager"));
     title.set_xalign(0.0);
     title.add_css_class("settings-option-title");
     let description = gtk::Label::new(Some(
@@ -81,14 +81,63 @@ pub(super) fn settings_row() -> gtk::Box {
     row
 }
 
+struct IntegrationIndicator {
+    row: glib::WeakRef<gtk::Box>,
+    icon: glib::WeakRef<gtk::Image>,
+    name: &'static str,
+}
+
+impl IntegrationIndicator {
+    fn new(parent: &gtk::Box, name: &'static str) -> Self {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let icon = crate::assets::primary_icon(icons::X, 16);
+        let label = gtk::Label::new(Some(name));
+        label.set_xalign(0.0);
+        label.set_wrap(true);
+        row.append(&icon);
+        row.append(&label);
+        row.set_visible(false);
+        parent.append(&row);
+        Self {
+            row: row.downgrade(),
+            icon: icon.downgrade(),
+            name,
+        }
+    }
+
+    fn update(&self, configured: Option<bool>) {
+        if let Some(row) = self.row.upgrade() {
+            row.set_visible(configured.is_some());
+            if let Some(configured) = configured {
+                let status = if configured {
+                    "Configured"
+                } else {
+                    "Not configured"
+                };
+                let description = format!("{}: {status}", self.name);
+                row.set_tooltip_text(Some(&description));
+                row.update_property(&[gtk::accessible::Property::Label(&description)]);
+                if let Some(icon) = self.icon.upgrade() {
+                    crate::assets::set_primary_icon(
+                        &icon,
+                        if configured { icons::CHECK } else { icons::X },
+                    );
+                }
+            }
+        }
+    }
+}
+
 struct Dialog {
     layer: glib::WeakRef<gtk::Box>,
     overlay: glib::WeakRef<gtk::Overlay>,
     root: Option<glib::WeakRef<BlurBin>>,
     confirm: glib::WeakRef<gtk::Button>,
     cancel: glib::WeakRef<gtk::Button>,
+    restore: glib::WeakRef<gtk::Button>,
     close: glib::WeakRef<gtk::Button>,
     status: glib::WeakRef<gtk::Label>,
+    indicators: [IntegrationIndicator; 4],
     description: glib::WeakRef<gtk::Label>,
     success: glib::WeakRef<gtk::Image>,
     loading: glib::WeakRef<gtk::Spinner>,
@@ -109,7 +158,7 @@ impl Dialog {
 
     fn set_busy(&self, busy: bool) {
         self.busy.set(busy);
-        for button in [&self.confirm, &self.cancel, &self.close] {
+        for button in [&self.confirm, &self.cancel, &self.close, &self.restore] {
             if let Some(button) = button.upgrade() {
                 button.set_sensitive(!busy);
             }
@@ -144,6 +193,9 @@ impl Dialog {
 
     fn complete(&self, message: &str) {
         self.finished.set(true);
+        for indicator in &self.indicators {
+            indicator.update(None);
+        }
         self.message(message, false);
         if let Some(description) = self.description.upgrade() {
             description.set_visible(false);
@@ -159,52 +211,38 @@ impl Dialog {
             confirm.set_label("Done");
             confirm.grab_focus();
         }
-        if let Some(cancel) = self.cancel.upgrade() {
-            cancel.set_visible(false);
+        for button in [&self.cancel, &self.restore] {
+            if let Some(button) = button.upgrade() {
+                button.set_visible(false);
+            }
         }
     }
 
     fn load(self: &Rc<Self>) {
+        self.reload(None);
+    }
+
+    fn reload(self: &Rc<Self>, failure: Option<String>) {
         self.set_busy(true);
         let dialog = self.clone();
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(|| {
-                let _ = portal_setup::dismiss_prompt();
+                portal_setup::dismiss_prompt()?;
                 let chooser = portal_setup::status()?;
                 let file_manager = portal_setup::file_manager_status()?;
-                let configured =
-                    chooser.configured && file_manager.default && file_manager.has_service;
-                let has_installation =
-                    chooser.has_installation || file_manager.has_service || file_manager.default;
-                Ok::<_, String>((configured, has_installation))
+                Ok::<_, String>((chooser, file_manager))
             })
             .await;
             dialog.set_busy(false);
             match result {
-                Ok(Ok((configured, has_installation))) => {
-                    dialog.enable.set(Some(!configured));
-                    dialog.message(
-                        if configured {
-                            "Strata is currently your default file manager. Open and Save dialogs, opening folders, and Reveal in File Manager from other apps all use Strata. Restoring removes this integration."
-                        } else if has_installation {
-                            "Some Strata integration exists, but it is not fully configured. You can complete the setup below."
-                        } else {
-                            "Your current file manager and chooser have not been changed. Enabling Strata makes it the default for Open and Save dialogs, opening folders, and Reveal in File Manager from other apps."
-                        },
-                        false,
-                    );
-                    if let Some(confirm) = dialog.confirm.upgrade() {
-                        confirm.set_label(if configured {
-                            "Restore previous"
-                        } else {
-                            "Use Strata"
-                        });
-                    }
-                }
+                Ok(Ok((chooser, file_manager))) => dialog.show_status(chooser, file_manager),
                 Ok(Err(error)) => dialog.load_failed(&error),
                 Err(error) => {
                     dialog.load_failed(&format!("Could not read configuration: {error:?}"))
                 }
+            }
+            if let Some(failure) = failure {
+                dialog.message(&format!("Setup did not finish: {failure}\nSome integrations may have changed. Complete setup to retry, or restore previous defaults."), true);
             }
             if let Some(cancel) = dialog.cancel.upgrade() {
                 cancel.grab_focus();
@@ -212,7 +250,53 @@ impl Dialog {
         });
     }
 
+    fn show_status(
+        &self,
+        chooser: portal_setup::PortalStatus,
+        manager: portal_setup::FileManagerStatus,
+    ) {
+        let configured = chooser.configured && manager.default && manager.has_service;
+        let partial = !configured
+            && (chooser.has_installation
+                || chooser.configured
+                || manager.has_installation
+                || manager.default);
+        self.enable.set(Some(!configured));
+        if let Some(confirm) = self.confirm.upgrade() {
+            confirm.set_label(if configured {
+                "Restore previous"
+            } else if partial {
+                "Complete setup"
+            } else {
+                "Use Strata"
+            });
+        }
+        if let Some(restore) = self.restore.upgrade() {
+            restore.set_visible(partial);
+        }
+        let state = if configured {
+            "Strata is configured for Open and Save dialogs, opening folders, and Reveal in File Manager."
+        } else if partial {
+            "Strata is only partially configured. Complete setup to opt into all integrations, or restore your previous defaults."
+        } else {
+            "Opt into Strata for all three integrations. Your defaults remain unchanged until you choose Use Strata."
+        };
+        self.message(state, false);
+        for (indicator, configured) in self.indicators.iter().zip([
+            Some(chooser.configured),
+            Some(manager.default),
+            Some(manager.has_service),
+            manager.shortcuts,
+        ]) {
+            indicator.update(configured);
+        }
+    }
+
     fn load_failed(&self, error: &str) {
+        self.enable.set(None);
+        for indicator in &self.indicators {
+            indicator.update(None);
+        }
         self.message(error, true);
         if let Some(confirm) = self.confirm.upgrade() {
             confirm.set_label("Retry");
@@ -262,8 +346,8 @@ impl Dialog {
                     let file_manager = portal_setup::install_file_manager()?;
                     Ok(format!("{chooser}\n{file_manager}"))
                 } else {
-                    let chooser = portal_setup::uninstall()?;
                     let file_manager = portal_setup::uninstall_file_manager()?;
+                    let chooser = portal_setup::uninstall()?;
                     Ok(format!("{chooser}\n{file_manager}"))
                 };
                 outcome
@@ -273,8 +357,8 @@ impl Dialog {
             dialog.set_busy(false);
             match result {
                 Ok(Ok(message)) => dialog.complete(&message),
-                Ok(Err(error)) => dialog.message(&error, true),
-                Err(error) => dialog.message(&format!("Setup failed: {error:?}"), true),
+                Ok(Err(error)) => dialog.reload(Some(error)),
+                Err(error) => dialog.reload(Some(format!("{error:?}"))),
             }
         });
     }
@@ -325,6 +409,22 @@ fn build_dialog(parent: &gtk::Window, offer: bool) -> Option<Rc<Dialog>> {
     status.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     status.add_css_class("form-message");
     layout.body.append(&status);
+    let indicators_box = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    indicators_box.add_css_class("form-message");
+    let indicators = [
+        "Open and Save dialogs",
+        "Opening folders",
+        "Reveal in File Manager",
+        "Keyboard shortcuts",
+    ]
+    .map(|name| IntegrationIndicator::new(&indicators_box, name));
+    layout.body.append(&indicators_box);
+    let restore = gtk::Button::with_label("Restore previous");
+    restore.add_css_class("action-dialog-cancel");
+    restore.set_visible(false);
+    layout
+        .actions
+        .insert_child_after(&restore, Some(&layout.cancel));
     let busy = Rc::new(Cell::new(false));
     let blocked = busy.clone();
     let layer = modal_layer(
@@ -339,8 +439,10 @@ fn build_dialog(parent: &gtk::Window, offer: bool) -> Option<Rc<Dialog>> {
         root: root.as_ref().map(ObjectExt::downgrade),
         confirm: layout.confirm.downgrade(),
         cancel: layout.cancel.downgrade(),
+        restore: restore.downgrade(),
         close: layout.close.downgrade(),
         status: status.downgrade(),
+        indicators,
         description: description.downgrade(),
         success: success.downgrade(),
         loading: layout.loading.downgrade(),
@@ -352,6 +454,13 @@ fn build_dialog(parent: &gtk::Window, offer: bool) -> Option<Rc<Dialog>> {
         let dialog = dialog.clone();
         button.connect_clicked(move |_| dialog.dismiss());
     }
+    let restore_action = dialog.clone();
+    restore.connect_clicked(move |_| {
+        if !restore_action.busy.get() {
+            restore_action.enable.set(Some(false));
+            restore_action.apply();
+        }
+    });
     let action = dialog.clone();
     layout.confirm.connect_clicked(move |_| action.apply());
     let escaped = dialog.clone();

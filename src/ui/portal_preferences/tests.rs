@@ -45,7 +45,103 @@ fn setup_copy_aligns_and_success_replaces_the_explanation() {
             .build();
         window.present();
         let dialog = build_dialog(&window, offer).expect("setup dialog");
-        dialog.message("Your current file chooser has not been changed. You can enable Strata now or later in Settings → General → System file chooser.", false);
+        for (chooser, folders, reveal, installed, label, restore) in [
+            (false, false, false, false, "Use Strata", false),
+            (true, false, false, true, "Complete setup", true),
+            (true, true, false, true, "Complete setup", true),
+            (false, true, true, true, "Complete setup", true),
+            (true, false, true, true, "Complete setup", true),
+            (false, false, false, true, "Complete setup", true),
+            (true, true, true, true, "Restore previous", false),
+        ] {
+            dialog.show_status(
+                portal_setup::PortalStatus {
+                    configured: chooser,
+                    has_installation: installed,
+                },
+                portal_setup::FileManagerStatus {
+                    default: folders,
+                    has_service: reveal,
+                    has_installation: installed,
+                    shortcuts: None,
+                },
+            );
+            assert_eq!(
+                dialog
+                    .confirm
+                    .upgrade()
+                    .expect("valid test fixture")
+                    .label()
+                    .as_deref(),
+                Some(label)
+            );
+            assert_eq!(
+                dialog
+                    .restore
+                    .upgrade()
+                    .expect("valid test fixture")
+                    .is_visible(),
+                restore
+            );
+            assert_eq!(dialog.enable.get(), Some(!(chooser && folders && reveal)));
+            for (indicator, configured) in dialog.indicators.iter().zip([chooser, folders, reveal])
+            {
+                let row = indicator.row.upgrade().expect("valid test fixture");
+                assert!(row.is_visible());
+                assert_eq!(
+                    row.tooltip_text().as_deref(),
+                    Some(
+                        format!(
+                            "{}: {}",
+                            indicator.name,
+                            if configured {
+                                "Configured"
+                            } else {
+                                "Not configured"
+                            }
+                        )
+                        .as_str()
+                    )
+                );
+            }
+            assert!(
+                !dialog.indicators[3]
+                    .row
+                    .upgrade()
+                    .expect("valid test fixture")
+                    .is_visible()
+            );
+        }
+        for shortcuts in [Some(true), Some(false), None] {
+            dialog.show_status(
+                portal_setup::PortalStatus {
+                    configured: false,
+                    has_installation: true,
+                },
+                portal_setup::FileManagerStatus {
+                    default: false,
+                    has_service: false,
+                    has_installation: true,
+                    shortcuts,
+                },
+            );
+            let row = dialog.indicators[3]
+                .row
+                .upgrade()
+                .expect("valid test fixture");
+            assert_eq!(row.is_visible(), shortcuts.is_some());
+            if let Some(configured) = shortcuts {
+                assert_eq!(
+                    row.tooltip_text().as_deref(),
+                    Some(if configured {
+                        "Keyboard shortcuts: Configured"
+                    } else {
+                        "Keyboard shortcuts: Not configured"
+                    })
+                );
+            }
+        }
+        dialog.message("Your current file manager has not been changed. You can enable Strata now or later in Settings → General → System file manager.", false);
         settle();
         let description = dialog.description.upgrade().expect("explanation");
         let status = dialog.status.upgrade().expect("status");
