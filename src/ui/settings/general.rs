@@ -87,7 +87,7 @@ fn append_browsing_options(content: &gtk::Box, manager: &Rc<ThemeManager>) {
         },
         PreferenceSwitch {
             title: "Keep arrows in file list",
-            description: "Stop arrow keys from leaving the file list. Use Tab or the mouse to reach the toolbar and sidebar.",
+            description: "Stop arrow keys from leaving the file list. Use Ctrl + Shift + B to focus the sidebar, or use the mouse.",
             read: ThemeManager::arrow_navigation_scoped,
             write: ThemeManager::set_arrow_navigation_scoped,
         },
