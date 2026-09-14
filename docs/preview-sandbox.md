@@ -14,6 +14,20 @@ parsing and decoding run inside bubblewrap, never in the application.
 - Plain text stays in-process, invokes no native format parser, and is capped at
   1 MiB.
 
+## Bundled interface icons
+
+Strata's bundled Lucide SVGs are trusted application resources, not browser files.
+They render directly to bounded in-memory pixels with `resvg`, avoiding synchronous
+GdkPixbuf/Glycin loader startup on the GTK thread during row binding and live theme
+changes. External and embedded image references are disabled; icon inputs and
+output dimensions are bounded. SVG text, system-font lookup, and raster-image
+features of this renderer are disabled. Emoji icons retain Pango/Cairo rendering
+but pass raw pixels to GTK instead of encoding and decoding an intermediate PNG.
+
+This renderer is not used for user SVGs, phone photos, or thumbnails of originals;
+those keep their existing sandbox boundary. No toolkit libraries or private media
+runtime patches are updated by this change.
+
 ## Remote still-image previews
 
 Still images on GIO/GVfs locations (including phone camera, AFC, and MTP storage)
