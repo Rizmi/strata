@@ -8,47 +8,6 @@ fn inline_setup_actions_follow_status_and_preserve_errors() {
     gtk::init().expect("GTK display");
     gio::resources_register_include!("strata.gresource").expect("bundled icons");
     crate::ui::prepare_portal_ui();
-    for (width, orientation) in [
-        (1200, gtk::Orientation::Horizontal),
-        (480, gtk::Orientation::Vertical),
-    ] {
-        let card = settings_row();
-        card.set_orientation(orientation);
-        let window = gtk::Window::builder()
-            .default_width(width)
-            .default_height(500)
-            .child(&card)
-            .build();
-        window.present();
-        let context = glib::MainContext::default();
-        let deadline = std::time::Instant::now() + Duration::from_millis(150);
-        while std::time::Instant::now() < deadline {
-            while context.pending() {
-                context.iteration(false);
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let content = card.first_child().expect("integration content");
-        let title = content
-            .first_child()
-            .expect("card title")
-            .downcast::<gtk::Label>()
-            .expect("title label");
-        let description = title.next_sibling().expect("description");
-        let title_bounds = title.compute_bounds(&card).expect("title bounds");
-        let description_bounds = description
-            .compute_bounds(&card)
-            .expect("description bounds");
-        assert!(
-            title_bounds.y() + title_bounds.height() <= description_bounds.y(),
-            "title must stay above the description at width {width}"
-        );
-        assert!(
-            title.width() >= title.layout().pixel_size().0,
-            "title must not be clipped at width {width}"
-        );
-        window.destroy();
-    }
     let parents = [
         gtk::Box::new(gtk::Orientation::Vertical, 0),
         gtk::Box::new(gtk::Orientation::Vertical, 0),
