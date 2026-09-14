@@ -127,7 +127,7 @@ fn filtered_selection_only_accepts_on_enter_or_open_with_exact_nested_path() {
                     .is_some_and(|column| !column.loading)
             });
 
-            state.view.show_filter_with_query("nested");
+            state.view.show_filter_with_query("nested*.TXT");
             wait_until(|| {
                 search_results_list(&state.view.widget())
                     .is_some_and(|list| list.row_at_index(1).is_some())
