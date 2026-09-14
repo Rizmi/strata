@@ -14,6 +14,28 @@ parsing and decoding run inside bubblewrap, never in the application.
 - Plain text stays in-process, invokes no native format parser, and is capped at
   1 MiB.
 
+## Media metadata
+
+File Properties and the preview pane show available source-media details: image
+resolution; audio/video duration and overall bitrate; video codec and frame rate;
+and audio codec, sample rate, and channel count. These describe the original file,
+not the preview's scaled frames or resampled audio. Attached album artwork is not
+reported as a video track, and still images do not show synthetic video timing.
+Missing individual fields are omitted; an unsuccessful inspection shows
+`Media: Unavailable` without blocking the other file information.
+
+Both surfaces use the same asynchronous inspector. Only regular files with a
+local source are inspected; remote files are not downloaded for metadata. The
+inspector runs `ffprobe` inside the existing software-only bubblewrap sandbox,
+with a four-second probe timeout and a 64 KiB JSON limit. Image information can
+fall back to GDK Pixbuf inside that same sandbox. The enclosing helper retains
+the existing memory, CPU, and wall-time limits and receives no GPU access. Media
+sandboxes expose only the optional BLAS/LAPACK runtime alternatives for supported
+x86-64 and ARM64 Debian-family installations, not all of `/etc/alternatives`. Only
+validated numeric fields and bounded codec identifiers reach the UI, not arbitrary
+embedded tags. Closing a surface or changing preview selection cancels its work
+and prevents stale results from appearing.
+
 ## Incremental media playback
 
 ```text
