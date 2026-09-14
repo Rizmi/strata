@@ -286,10 +286,11 @@ def test_filtered_thumbnail_stays_rendered_across_updates(strata, mode, tmp_path
     assert icon is not None
 
     def thumbnail_pixel():
+        row_bounds = strata.settle(row).screen_bounds()
         bounds = icon.screen_bounds()
         capture = strata.screenshot(tmp_path / "thumbnail.png")
         with Image.open(capture) as image:
-            return image.convert("RGB").getpixel((bounds.center[0], row.screen_bounds().center[1]))
+            return image.convert("RGB").getpixel((bounds.center[0], row_bounds.center[1]))
 
     strata.wait(lambda: thumbnail_pixel() == (230, 40, 60), "the generated red thumbnail")
     for query, count in [("thumb.p", 1), ("thumb", 2)]:
