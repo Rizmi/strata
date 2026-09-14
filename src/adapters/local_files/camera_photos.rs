@@ -4,17 +4,17 @@ use std::collections::{HashSet, VecDeque};
 
 use super::*;
 
-const MAX_DIRECTORIES: usize = 4_096;
-const MAX_DEPTH: usize = 16;
-
 pub(super) fn enumerate(request: DirectoryRequest, emit: Rc<dyn Fn(DirectoryEvent)>) -> LoadHandle {
     let task = glib::MainContext::default().spawn_local_with_priority(
         glib::Priority::DEFAULT_IDLE,
         async move {
             let mut library = Library::new(&request);
-            let result =
+            let result = if request.time_budget == Duration::MAX {
+                Ok(library.discover(&request, &emit).await)
+            } else {
                 glib::future_with_timeout(request.time_budget, library.discover(&request, &emit))
-                    .await;
+                    .await
+            };
             match result {
                 Ok(Err(message)) => emit(DirectoryEvent::Failed {
                     request_id: request.id,
@@ -33,7 +33,7 @@ pub(super) fn enumerate(request: DirectoryRequest, emit: Rc<dyn Fn(DirectoryEven
 }
 
 struct Library {
-    pending: VecDeque<(Location, usize, bool)>,
+    pending: VecDeque<(Location, bool)>,
     seen: HashSet<Location>,
     files: usize,
     truncated: bool,
@@ -44,7 +44,7 @@ struct Library {
 impl Library {
     fn new(request: &DirectoryRequest) -> Self {
         Self {
-            pending: VecDeque::from([(request.location.clone(), 0, false)]),
+            pending: VecDeque::from([(request.location.clone(), false)]),
             seen: HashSet::from([request.location.clone()]),
             files: 0,
             truncated: false,
@@ -64,7 +64,7 @@ impl Library {
             LIST_ATTRIBUTES
         };
         let batch_size = request.batch_size.clamp(1, 256) as i32;
-        while let Some((location, depth, hidden_parent)) = self.pending.pop_front() {
+        while let Some((location, hidden_parent)) = self.pending.pop_front() {
             let pending_before = self.pending.len();
             let enumerator = gio_file_for_location(&location)
                 .enumerate_children_future(
@@ -95,14 +95,9 @@ impl Library {
                     }
                     match info.file_type() {
                         gio::FileType::Directory => {
-                            if depth >= MAX_DEPTH || self.seen.len() >= MAX_DIRECTORIES {
-                                self.truncated = true;
-                            } else if self.seen.insert(child.clone()) {
-                                self.pending.push_back((
-                                    child,
-                                    depth + 1,
-                                    hidden_parent || info_is_hidden(&info),
-                                ));
+                            if self.seen.insert(child.clone()) {
+                                self.pending
+                                    .push_back((child, hidden_parent || info_is_hidden(&info)));
                             }
                         }
                         gio::FileType::Regular => {

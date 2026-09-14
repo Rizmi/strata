@@ -382,9 +382,11 @@ Camera batches yield to interface input and redraws. In List view, file-type
 grouping is applied after discovery finishes; the saved grouping setting is
 preserved while the live listing stays ungrouped.
 
-Discovery reads metadata, not every photo's contents. It skips symlinks, preserves
-hidden-file filtering, and reports a partial listing if it reaches 100,000 files,
-4,096 directories, 16 nested levels, or two minutes. Refresh to rescan after a
+Discovery reads metadata, not every photo's contents. It skips symlinks, avoids
+revisiting discovered directories, and preserves hidden-file filtering. Photos
+keeps loading in batches until the whole exposed library is indexed, you navigate
+away or refresh, or the device reports an error. There is no overall scan
+deadline or fixed file, folder, or nesting limit. Refresh to rescan after a
 phone-side change; not every device supports live change notifications.
 
 Android MTP and iPhone app-document/AFC entries retain normal folder browsing.

@@ -22,7 +22,7 @@ fn collect(root: &Path, max_entries: usize, time_budget: Duration) -> Vec<Direct
         Rc::new(move |event| emitted.borrow_mut().push(event)),
     );
     context.block_on(async {
-        let deadline = Instant::now() + time_budget + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !events.borrow().iter().any(|event| {
             matches!(
                 event,
@@ -117,7 +117,7 @@ fn discovers_only_files_across_date_folders_without_collapsing_duplicate_names()
     std::os::unix::fs::symlink(root.path(), root.path().join("loop")).expect("cycle symlink");
     std::os::unix::fs::symlink(root.path().join(paths[0]), root.path().join("image-link"))
         .expect("file symlink");
-    let events = collect(root.path(), 100, Duration::from_secs(4));
+    let events = collect(root.path(), usize::MAX, Duration::MAX);
     assert!(matches!(
         events.last(),
         Some(DirectoryEvent::Finished {
@@ -168,7 +168,7 @@ fn discovers_only_files_across_date_folders_without_collapsing_duplicate_names()
 }
 
 #[test]
-fn reports_file_depth_and_time_limits_instead_of_silently_showing_a_complete_library() {
+fn bounded_camera_peeks_keep_limits_but_complete_scans_reach_deep_files() {
     let root = tempfile::tempdir().expect("camera tree");
     fs::write(root.path().join("a.jpg"), b"a").expect("first image");
     fs::write(root.path().join("b.jpg"), b"b").expect("second image");
@@ -190,49 +190,51 @@ fn reports_file_depth_and_time_limits_instead_of_silently_showing_a_complete_lib
         })
     ));
     let mut deep = root.path().to_path_buf();
-    for _ in 0..=MAX_DEPTH {
+    for _ in 0..18 {
         deep = deep.join("nested");
     }
     fs::create_dir_all(&deep).expect("deep camera tree");
     fs::write(deep.join("deep.jpg"), b"c").expect("deep image");
-    let limited = collect(root.path(), 100, Duration::from_secs(4));
-    assert_eq!(files(&limited).len(), 2);
+    let complete = collect(root.path(), usize::MAX, Duration::MAX);
+    let entries = files(&complete);
+    assert_eq!(entries.len(), 3);
+    assert!(entries.iter().any(|entry| entry.native_name == "deep.jpg"));
     assert!(matches!(
-        limited.last(),
+        complete.last(),
         Some(DirectoryEvent::Finished {
-            truncated: true,
+            truncated: false,
             ..
         })
     ));
 }
 
 #[test]
-fn camera_directory_limit_reports_an_incomplete_library() {
+fn camera_scans_finish_all_folders_beyond_the_previous_directory_limit() {
     let root = tempfile::tempdir().expect("camera tree");
-    for i in 0..MAX_DIRECTORIES {
+    let folder_count = 4_100;
+    for i in 0..folder_count {
         let folder = root.path().join(format!("folder-{i}"));
         fs::create_dir(&folder).expect("camera folder");
         fs::write(folder.join("photo.jpg"), b"photo").expect("camera photo");
     }
-    let events = collect(root.path(), MAX_DIRECTORIES + 1, Duration::from_secs(30));
+    let events = collect(root.path(), usize::MAX, Duration::MAX);
     assert!(matches!(
         events.last(),
         Some(DirectoryEvent::Finished {
-            truncated: true,
+            truncated: false,
             ..
         })
     ));
-    assert_eq!(files(&events).len(), MAX_DIRECTORIES - 1);
+    let entries = files(&events);
+    assert_eq!(entries.len(), folder_count);
+    let identities: HashSet<_> = entries.iter().map(|entry| &entry.location).collect();
+    assert_eq!(identities.len(), folder_count);
 }
 
 #[test]
 fn inaccessible_camera_roots_report_failure_instead_of_an_empty_library() {
     let root = tempfile::tempdir().expect("camera tree");
-    let events = collect(
-        &root.path().join("disconnected"),
-        100,
-        Duration::from_secs(4),
-    );
+    let events = collect(&root.path().join("disconnected"), usize::MAX, Duration::MAX);
     assert!(matches!(events.last(), Some(DirectoryEvent::Failed { .. })));
     assert!(files(&events).is_empty());
 }
@@ -258,8 +260,8 @@ fn cancellation_after_first_batch_stops_recursive_discovery() {
             location: Location::uri(gio::File::for_path(root.path()).uri()),
             batch_size: 1,
             include_metadata: false,
-            max_entries: 100,
-            time_budget: Duration::from_secs(4),
+            max_entries: usize::MAX,
+            time_budget: Duration::MAX,
         },
         Rc::new(move |event| {
             assert!(matches!(event, DirectoryEvent::Batch { .. }));

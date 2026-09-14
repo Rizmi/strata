@@ -3146,10 +3146,10 @@ impl Browser {
             .map(|preferences| preferences.sort_key)
             .unwrap_or_else(|| self.preferences.get().sort_key);
         let include_metadata = matches!(sort_key, SortKey::Size | SortKey::Modified);
-        let time_budget = if location.is_camera_photo_root() {
-            Duration::from_secs(120)
+        let (max_entries, time_budget) = if location.is_camera_photo_root() {
+            (usize::MAX, Duration::MAX)
         } else {
-            DIRECTORY_LOAD_TIME_BUDGET
+            (MAX_DIRECTORY_ENTRIES, DIRECTORY_LOAD_TIME_BUDGET)
         };
         self.source.enumerate(
             DirectoryRequest {
@@ -3157,7 +3157,7 @@ impl Browser {
                 location,
                 batch_size,
                 include_metadata,
-                max_entries: MAX_DIRECTORY_ENTRIES,
+                max_entries,
                 time_budget,
             },
             emit,
