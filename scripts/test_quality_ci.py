@@ -41,7 +41,7 @@ class QualityCiTests(unittest.TestCase):
         self.plan = dict(version=1, commit="fixture", source_key="source", image_key="image", binaries=[dict(
             file="test-0", target="fixture", sha256=quality.digest(self.executable),
             tests=["a", "b", "c", "d", "ignored"], ignored=["ignored"],
-            shards=[["a"], ["b", "ignored"], ["c"], ["d"]],
+            shards=[["a"], ["b", "c", "d", "ignored"]],
         )])
         self.plan_path = self.bundle / "plan.json"
         self.save_plan()
@@ -86,7 +86,7 @@ class QualityCiTests(unittest.TestCase):
                 self.assertEqual(shards, quality.partition(list(reversed(names)), durations))
                 self.assertEqual(sorted(test for shard in shards for test in shard), sorted(names))
                 self.assertEqual(shards[0], ["a"])
-                self.assertEqual(shards[1], ["test_0"])
+                self.assertEqual(shards[1], sorted(set(names) - {"a"}))
                 self.assertTrue(all(shards))
         self.assertEqual(quality.partition(names, {})[0], ["a"])
 
@@ -94,7 +94,7 @@ class QualityCiTests(unittest.TestCase):
         binary = copy.deepcopy(self.plan["binaries"][0])
         binary.update(file="test-1", tests=["e", "f", "g"], ignored=[],
                       shards=quality.partition(["e", "f", "g"], {}))
-        self.assertEqual(binary["shards"], [[], ["e"], ["f"], ["g"]])
+        self.assertEqual(binary["shards"], [[], ["e", "f", "g"]])
         self.plan["binaries"].append(binary)
         quality.validate_plan(self.plan)
 
@@ -133,7 +133,7 @@ class QualityCiTests(unittest.TestCase):
             lambda plan: plan["binaries"][0]["shards"][0].remove("a"),
             lambda plan: plan["binaries"][0].update(file="../test-0"),
             lambda plan: plan["binaries"].append(copy.deepcopy(plan["binaries"][0])),
-            lambda plan: plan["binaries"][0]["ignored"].append("d"),
+            lambda plan: plan["binaries"][0]["ignored"].extend(["b", "c", "d"]),
         ]
         for mutate in mutations:
             with self.subTest(mutate=mutate):
@@ -182,7 +182,7 @@ class QualityCiTests(unittest.TestCase):
         self.save_plan()
         with self.assertRaises(ValueError):
             quality.run(0)
-        for shard in (-1, 4, None):
+        for shard in (-1, quality.SHARDS, None):
             with self.assertRaises(ValueError):
                 quality.run(shard)
 
