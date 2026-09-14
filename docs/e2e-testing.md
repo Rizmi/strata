@@ -175,15 +175,16 @@ each libtest inventory, including the explicitly ignored tests, and assigns ever
 entry to one of two shards. Timing hints in `scripts/quality-durations.json`
 come from successful GTK child runs in
 [run 34560353003](https://github.com/lgse/strata/actions/runs/34560353003).
-Shard 0 is reserved exclusively for
-`ui::search::tests::deferred_scroll_restoration_yields_to_updates_wheel_scrollbar_and_query_reset`.
-Every other test runs in shard 1; unknown tests always participate.
-The planner retains longest-first balancing for future changes to the shard count.
-Timing hints are not an allowlist and cannot put another test into shard 0. Validation rejects mixed
-assignments or a missing, duplicated, or ignored isolated test, so renaming or
-removing it requires updating `ISOLATED_TEST` and the reservation policy.
-The deferred-scroll regression retains its dedicated shard; sharding does not
-shorten an individual test.
+Tests are balanced longest-first across both shards; unknown tests receive a
+one-second weight and always participate. Timing hints are not an allowlist.
+The deferred-scroll timing was refreshed to 1.32 seconds from
+[run 34811363582](https://github.com/lgse/strata/actions/runs/34811363582).
+`ui::search::tests::deferred_scroll_restoration_yields_to_updates_wheel_scrollbar_and_query_reset`
+runs in its own libtest process before the other tests assigned to its shard,
+not on a dedicated runner. Each process must pass its complete selection before
+an aggregate shard receipt is written. Validation rejects a missing, duplicated,
+or ignored isolated test; renaming or removing it requires updating `ISOLATED_TEST`.
+Sharding does not shorten an individual test.
 
 Each **Rust tests shard N** verifies the checkout revision, application/Rust-test source
 fingerprint, image inputs, executable checksums, and the entire libtest inventory
