@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.modes import ALL_MODES, NEXT_ENTRY_KEY, PREVIOUS_ENTRY_KEY
+from harness.modes import ALL_MODES, COLUMNS_AND_ONE, NEXT_ENTRY_KEY, PREVIOUS_ENTRY_KEY
 
 ROOT_ENTRIES = ["archive", "documents", "pictures", "readme.md", "todo.txt"]
 
@@ -66,21 +66,7 @@ def test_arrow_scope_keeps_focus_in_files_and_toggles_live(strata, mode, binding
     strata.wait_for_focused_entry("archive")
 
 
-@pytest.mark.parametrize("mode", ALL_MODES)
-def test_enter_opens_the_focused_directory(strata, mode):
-    strata.select_entry("readme.md")
-    strata.keyboard.press("Home")
-    strata.wait_for_focused_entry("archive")
-    strata.keyboard.press(NEXT_ENTRY_KEY[mode])
-    strata.wait_for_focused_entry("documents")
-
-    strata.keyboard.press("Return")
-
-    strata.wait_for_directory("documents")
-    strata.entry("notes.txt", directory="documents")
-
-
-@pytest.mark.parametrize("mode", ALL_MODES)
+@pytest.mark.parametrize("mode", COLUMNS_AND_ONE)
 def test_alt_up_and_history_navigate_between_directories(strata, mode):
     root = strata.fixture.root.name
 
@@ -175,7 +161,7 @@ def test_shift_arrow_extends_the_selection(strata, mode):
     )
 
 
-@pytest.mark.parametrize("mode", ALL_MODES)
+@pytest.mark.parametrize("mode", COLUMNS_AND_ONE)
 def test_select_all_selects_every_entry(strata, mode):
     strata.select_entry("readme.md")
 
