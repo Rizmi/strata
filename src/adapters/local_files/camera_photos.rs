@@ -8,23 +8,27 @@ const MAX_DIRECTORIES: usize = 4_096;
 const MAX_DEPTH: usize = 16;
 
 pub(super) fn enumerate(request: DirectoryRequest, emit: Rc<dyn Fn(DirectoryEvent)>) -> LoadHandle {
-    let task = glib::MainContext::default().spawn_local(async move {
-        let mut library = Library::new(&request);
-        let result =
-            glib::future_with_timeout(request.time_budget, library.discover(&request, &emit)).await;
-        match result {
-            Ok(Err(message)) => emit(DirectoryEvent::Failed {
-                request_id: request.id,
-                message,
-            }),
-            result => emit(DirectoryEvent::Finished {
-                request_id: request.id,
-                truncated: !matches!(result, Ok(Ok(()))) || library.truncated,
-                can_trash: library.can_trash,
-                can_delete: library.can_delete,
-            }),
-        }
-    });
+    let task = glib::MainContext::default().spawn_local_with_priority(
+        glib::Priority::DEFAULT_IDLE,
+        async move {
+            let mut library = Library::new(&request);
+            let result =
+                glib::future_with_timeout(request.time_budget, library.discover(&request, &emit))
+                    .await;
+            match result {
+                Ok(Err(message)) => emit(DirectoryEvent::Failed {
+                    request_id: request.id,
+                    message,
+                }),
+                result => emit(DirectoryEvent::Finished {
+                    request_id: request.id,
+                    truncated: !matches!(result, Ok(Ok(()))) || library.truncated,
+                    can_trash: library.can_trash,
+                    can_delete: library.can_delete,
+                }),
+            }
+        },
+    );
     LoadHandle::new(move || task.abort())
 }
 
@@ -66,13 +70,13 @@ impl Library {
                 .enumerate_children_future(
                     attributes,
                     gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-                    glib::Priority::DEFAULT,
+                    glib::Priority::DEFAULT_IDLE,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
             loop {
                 let infos = enumerator
-                    .next_files_future(batch_size, glib::Priority::DEFAULT)
+                    .next_files_future(batch_size, glib::Priority::DEFAULT_IDLE)
                     .await
                     .map_err(|error| error.to_string())?;
                 if infos.is_empty() {
@@ -132,7 +136,7 @@ impl Library {
                 }
             }
             enumerator
-                .close_future(glib::Priority::DEFAULT)
+                .close_future(glib::Priority::DEFAULT_IDLE)
                 .await
                 .map_err(|error| error.to_string())?;
             if self.truncated && self.files == request.max_entries {

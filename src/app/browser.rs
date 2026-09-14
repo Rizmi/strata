@@ -426,6 +426,9 @@ const COALESCE_ENTRIES: usize = 2048;
 /// Bounds one remote progressive flush: a slow link must not turn one timer
 /// fire into a multi-frame GTK mutation.
 const REMOTE_FLUSH_CAP: usize = 512;
+// Camera folders repeat filenames, creating many interleaved insertions rather
+// than one cheap append. Keep each publication small enough for input/frame work.
+const CAMERA_FLUSH_CAP: usize = 32;
 /// Latency bound so later remote batches flush on the next idle/frame.
 const REMOTE_FLUSH_DELAY: Duration = Duration::from_millis(50);
 /// Snapshots at or below this size sort synchronously; larger ones sort in a

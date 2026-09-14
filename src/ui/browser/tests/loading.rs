@@ -5,6 +5,8 @@ use crate::services::{
     DirectoryEvent, DirectoryRequest, LoadHandle, LocationValidationError, RequestId,
 };
 
+mod camera_stress;
+
 struct Request {
     id: RequestId,
     emit: Rc<dyn Fn(DirectoryEvent)>,

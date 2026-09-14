@@ -375,6 +375,10 @@ to distinguish their sources. Preview, copy, and delete act on those originals.
 This is the USB-exposed collection, not iOS's Albums hierarchy. The current
 backend does not provide album membership for a reliable Albums/Camera Roll split.
 
+Camera batches yield to interface input and redraws. In List view, file-type
+grouping is applied after discovery finishes; the saved grouping setting is
+preserved while the live listing stays ungrouped.
+
 Discovery reads metadata, not every photo's contents. It skips symlinks, preserves
 hidden-file filtering, and reports a partial listing if it reaches 100,000 files,
 4,096 directories, 16 nested levels, or two minutes. Refresh to rescan after a
