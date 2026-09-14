@@ -8,7 +8,16 @@ import pytest
 from harness.modes import ALL_MODES
 
 
+@pytest.fixture
+def fixture_tree(fixture_tree, request):
+    extension = request.node.callspec.params.get("extension", "zip")
+    fixture_tree.path(f"archive.{extension}").write_bytes(b"original archive")
+    fixture_tree.path(f"archive (1).{extension}").write_bytes(b"previous archive")
+    return fixture_tree
+
+
 def request_archive_collision(strata, format="ZIP"):
+    strata.select_entry("todo.txt")
     strata.open_context_menu("todo.txt")
     strata.choose_menu_item("Compress…")
     dialog = strata.wait_for_dialog()
@@ -31,8 +40,6 @@ def test_keep_both_preserves_archives_and_selects_each_numbered_output(strata, m
     fixture = strata.fixture
     original = fixture.path(f"archive.{extension}")
     previous = fixture.path(f"archive (1).{extension}")
-    original.write_bytes(b"original archive")
-    previous.write_bytes(b"previous archive")
     for suffix in [2, 3]:
         request_archive_collision(strata, format)
         if activation == "pointer":
@@ -50,9 +57,11 @@ def test_keep_both_preserves_archives_and_selects_each_numbered_output(strata, m
         strata.wait(lambda: strata.on_screen(strata.entry(name)), "numbered archive reveal")
         if format == "ZIP":
             with zipfile.ZipFile(path) as archive:
+                assert archive.namelist() == ["todo.txt"]
                 assert archive.read("todo.txt") == fixture.path("todo.txt").read_bytes()
         else:
             with tarfile.open(path, "r:gz") as archive:
+                assert archive.getnames() == ["todo.txt"]
                 assert archive.extractfile("todo.txt").read() == fixture.path("todo.txt").read_bytes()
         assert original.read_bytes() == b"original archive"
         assert previous.read_bytes() == b"previous archive"
@@ -61,7 +70,6 @@ def test_keep_both_preserves_archives_and_selects_each_numbered_output(strata, m
 @pytest.mark.parametrize("choice", ["Cancel", "Escape", "Replace"])
 def test_archive_conflict_keyboard_choices_preserve_cancel_and_replace_behavior(strata, choice):
     original = strata.fixture.path("archive.zip")
-    original.write_bytes(b"original archive")
     request_archive_collision(strata)
     strata.wait(lambda: strata.dialog_button("Replace").has_state("focused"), "initial Replace focus")
     if choice == "Escape":
@@ -73,9 +81,11 @@ def test_archive_conflict_keyboard_choices_preserve_cancel_and_replace_behavior(
             strata.wait(lambda: strata.dialog_button("Cancel").has_state("focused"), "Cancel focus")
         strata.keyboard.press("Return")
     strata.wait(lambda: strata.dialog() is None, "conflict dismissal")
-    assert not strata.fixture.path("archive (1).zip").exists()
+    assert strata.fixture.path("archive (1).zip").read_bytes() == b"previous archive"
+    assert not strata.fixture.path("archive (2).zip").exists()
     if choice == "Replace":
         with zipfile.ZipFile(original) as archive:
+            assert archive.namelist() == ["todo.txt"]
             assert archive.read("todo.txt") == strata.fixture.path("todo.txt").read_bytes()
     else:
         assert original.read_bytes() == b"original archive"
