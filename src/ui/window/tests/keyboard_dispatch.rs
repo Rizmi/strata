@@ -397,21 +397,36 @@ fn arrow_scope_preference_keeps_up_in_the_file_list() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::arrow_scope_preference_keeps_up_in_the_file_list",
         || {
-            let fixture = KeyboardFixture::new();
-            fixture.view.set_view_mode(BrowserMode::List);
-            fixture.view.browser().select(0, 0);
-            fixture.view.browser().focus_active();
-            wait_until(|| fixture.view.item_view_has_focus() && fixture.selected() == [0]);
+            let fixtures = [KeyboardFixture::new(), KeyboardFixture::new()];
+            let preferences = ThemeManager::shared();
+            assert!(preferences.arrow_navigation_scoped());
+            for mode in [BrowserMode::List, BrowserMode::Icons, BrowserMode::Columns] {
+                for scoped in [true, false, true] {
+                    preferences.set_arrow_navigation_scoped(scoped);
+                    for fixture in &fixtures {
+                        fixture.view.set_view_mode(mode);
+                        fixture.window.present();
+                        fixture.view.browser().select(0, 0);
+                        fixture.view.browser().focus_active();
+                        wait_until(|| {
+                            fixture.view.item_view_has_focus() && fixture.selected() == [0]
+                        });
 
-            // Seeded preference is on: Up from the first row stays in the file list.
-            assert!(!fixture.press(Key::Up, ModifierType::empty()));
-            assert!(fixture.view.item_view_has_focus());
-            assert!(!fixture.view.header_actions_have_focus());
+                        fixture.press(Key::Up, ModifierType::empty());
+                        assert_eq!(fixture.view.item_view_has_focus(), scoped, "{mode:?}");
+                        assert_eq!(
+                            fixture.view.header_actions_have_focus(),
+                            !scoped,
+                            "{mode:?}"
+                        );
 
-            // Toggle off: Up from the first row escapes into the pane header.
-            ThemeManager::shared().set_arrow_navigation_scoped(false);
-            assert!(fixture.press(Key::Up, ModifierType::empty()));
-            assert!(fixture.view.header_actions_have_focus());
+                        fixture.view.browser().focus_active();
+                        wait_until(|| fixture.view.item_view_has_focus());
+                        fixture.press(Key::Left, ModifierType::empty());
+                        assert_eq!(fixture.view.item_view_has_focus(), scoped, "{mode:?}");
+                    }
+                }
+            }
         },
     );
 }

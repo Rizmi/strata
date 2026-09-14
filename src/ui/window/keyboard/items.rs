@@ -196,7 +196,10 @@ impl Dispatcher {
     }
 
     fn navigate_left(&self, event: &KeyEvent) {
-        if self.view.first_column_has_focus() && self.top_bar.sidebar_toggle().is_active() {
+        if self.view.first_column_has_focus()
+            && self.top_bar.sidebar_toggle().is_active()
+            && !self.arrows_scoped_to_content()
+        {
             self.sidebar.enter(&event.focused);
         } else {
             self.view.navigate_left();

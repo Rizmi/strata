@@ -783,7 +783,7 @@ fn arrow_scope_keeps_left_in_the_chooser_file_view() {
             for name in ["a.txt", "b.txt", "c.txt"] {
                 std::fs::write(root.path().join(name), "text").expect("fixture file");
             }
-            for mode in [BrowserMode::List, BrowserMode::Icons] {
+            for mode in [BrowserMode::List, BrowserMode::Icons, BrowserMode::Columns] {
                 ThemeManager::shared().set_browser_mode(mode);
                 let state = build_chooser(
                     request(root.path().to_path_buf()),
@@ -798,18 +798,22 @@ fn arrow_scope_keeps_left_in_the_chooser_file_view() {
                         .column_snapshot(0)
                         .is_some_and(|column| !column.loading && column.count == 3)
                 });
-                browser.select(0, 0);
-                browser.focus_active();
-                wait_until(|| state.view.item_view_has_focus());
-
-                assert!(
-                    !press(&state.window, gtk::gdk::Key::Left),
-                    "{mode:?}: Left consumed"
-                );
-                assert!(
-                    state.view.item_view_has_focus(),
-                    "{mode:?}: Left stays in the file view with arrow scope on"
-                );
+                for scoped in [true, false, true] {
+                    ThemeManager::shared().set_arrow_navigation_scoped(scoped);
+                    for key in [gtk::gdk::Key::Left, gtk::gdk::Key::Up] {
+                        browser.select(0, 0);
+                        browser.focus_active();
+                        wait_until(|| {
+                            state.view.item_view_has_focus() && state.view.item_at_sidebar_edge()
+                        });
+                        press(&state.window, key);
+                        assert_eq!(
+                            state.view.item_view_has_focus(),
+                            scoped,
+                            "{mode:?}: {key:?} with arrow scope {scoped}"
+                        );
+                    }
+                }
                 state.window.close();
             }
         },
