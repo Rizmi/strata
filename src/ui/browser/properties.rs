@@ -16,6 +16,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+mod media;
+
 const SIZE_PROGRESS_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Default)]
@@ -506,11 +508,7 @@ impl ViewState {
         if !is_directory
             && let Some(path) = entry.as_ref().and_then(FileEntry::local_thumbnail_path)
         {
-            let load = Rc::new(crate::ui::media_metadata::load(
-                &media_section,
-                path.to_path_buf(),
-                crate::ui::media_metadata::Layout::Properties,
-            ));
+            let load = Rc::new(media::load(&media_section, path.to_path_buf()));
             let closing = load.clone();
             layer.connect_sensitive_notify(move |layer| {
                 if !layer.is_sensitive() {

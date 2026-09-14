@@ -91,30 +91,22 @@ def test_properties_reports_available_media_metadata(strata, fixture_tree, name,
 
 
 @pytest.mark.preferences(browser_mode="icons", single_click_previews=False)
-def test_preview_media_details_follow_selection_and_clear_on_close(strata):
-    strata.select_entry("photo.png")
+def test_media_details_are_properties_only(strata):
+    strata.select_entry("clip.mp4")
     strata.keyboard.press("space")
-    strata.wait(lambda: strata.preview_shows("1600 × 900 pixels"), "original image dimensions")
-    for name, expected in [("clip.mp4", "24.00 fps"), ("sound.wav", "44.1 kHz")]:
-        strata.select_entry_with_keyboard(name)
-        strata.wait(
-            lambda: strata.preview() and strata.preview().find(role="label", name=expected, rendered=False),
-            f"media details for {name}",
-        )
-        assert not strata.preview_shows("1600 × 900 pixels")
-    assert strata.preview().find(role="label", name="VIDEO CODEC", rendered=False) is None
-    strata.select_entry_with_keyboard("readme.md")
-    strata.wait(lambda: strata.preview_shows("text/"), "text preview after media")
-    assert strata.preview().find(role="label", name="SAMPLE RATE", rendered=False) is None
-    strata.select_entry_with_keyboard("clip.mp4")
-    strata.select_entry_with_keyboard("photo.png")
-    strata.wait(lambda: strata.preview_shows("1600 × 900 pixels"), "latest selection after cancelling the probe")
-    assert strata.preview().find(role="label", name="VIDEO CODEC", rendered=False) is None
-    strata.keyboard.press("space")
-    strata.wait(lambda: strata.preview() is None, "preview to close")
-    strata.select_entry_with_keyboard("sound.wav")
-    strata.keyboard.press("space")
+    strata.wait(lambda: strata.preview_shows("video/mp4"), "video preview ready")
+    strata.open_context_menu("clip.mp4")
+    strata.choose_menu_item("Properties")
+    dialog = strata.wait_for_dialog()
     strata.wait(
-        lambda: strata.preview() and strata.preview().find(role="label", name="44.1 kHz", rendered=False),
-        "fresh media details after reopening",
+        lambda: dialog.find(role="label", name="320 × 180 pixels", rendered=False),
+        "source resolution in Properties",
     )
+    strata.keyboard.press("Escape")
+    strata.wait(lambda: strata.dialog() is None, "Properties to close")
+    preview = strata.preview()
+    assert preview is not None
+    for name in ["SIZE", "MODIFIED", "TYPE"]:
+        assert preview.find(role="label", name=name, rendered=False)
+    for name in ["RESOLUTION", "DURATION", "BITRATE", "VIDEO CODEC", "FRAME RATE", "AUDIO CODEC", "SAMPLE RATE", "CHANNELS"]:
+        assert preview.find(role="label", name=name, rendered=False) is None

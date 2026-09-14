@@ -8,12 +8,6 @@ use crate::sandbox::{
     self, Cancellation, MediaPreviewBackend, ParseOperation, metadata::MediaMetadata,
 };
 
-#[derive(Clone, Copy)]
-pub(super) enum Layout {
-    Properties,
-    Preview,
-}
-
 pub(super) struct MetadataLoad(Cancellation);
 
 impl Drop for MetadataLoad {
@@ -28,7 +22,7 @@ impl MetadataLoad {
     }
 }
 
-fn append_row(parent: &gtk::Box, name: &str, value: &str, layout: Layout) -> gtk::Label {
+fn append_row(parent: &gtk::Box, name: &str, value: &str) -> gtk::Label {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let heading = gtk::Label::new(Some(name));
     heading.set_xalign(0.0);
@@ -39,17 +33,9 @@ fn append_row(parent: &gtk::Box, name: &str, value: &str, layout: Layout) -> gtk
     label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     label.set_max_width_chars(48);
     label.set_tooltip_text(Some(value));
-    match layout {
-        Layout::Properties => {
-            row.add_css_class("properties-row");
-            heading.add_css_class("properties-row-label");
-            label.add_css_class("properties-row-value");
-        }
-        Layout::Preview => {
-            heading.add_css_class("preview-metadata-label");
-            label.add_css_class("preview-metadata-value");
-        }
-    }
+    row.add_css_class("properties-row");
+    heading.add_css_class("properties-row-label");
+    label.add_css_class("properties-row-value");
     row.append(&heading);
     row.append(&label);
     parent.append(&row);
@@ -108,7 +94,7 @@ fn rows(metadata: &MediaMetadata) -> Vec<(&'static str, String)> {
     rows
 }
 
-pub(super) fn load(section: &gtk::Box, path: PathBuf, layout: Layout) -> MetadataLoad {
+pub(super) fn load(section: &gtk::Box, path: PathBuf) -> MetadataLoad {
     let cancellation = Cancellation::default();
     let handle = MetadataLoad(cancellation.clone());
     while let Some(child) = section.first_child() {
@@ -142,7 +128,7 @@ pub(super) fn load(section: &gtk::Box, path: PathBuf, layout: Layout) -> Metadat
             return;
         }
         if let Some(section) = section.upgrade() {
-            append_row(&section, "MEDIA", "Loading…", layout);
+            append_row(&section, "MEDIA", "Loading…");
             section.set_visible(true);
         } else {
             return;
@@ -174,12 +160,12 @@ pub(super) fn load(section: &gtk::Box, path: PathBuf, layout: Layout) -> Metadat
             .map(|metadata| rows(&metadata))
             .unwrap_or_default();
         if rows.is_empty() {
-            append_row(&section, "MEDIA", "Unavailable", layout);
+            append_row(&section, "MEDIA", "Unavailable");
             return;
         }
         let headings = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
         for (name, value) in rows {
-            headings.add_widget(&append_row(&section, name, &value, layout));
+            headings.add_widget(&append_row(&section, name, &value));
         }
     });
     handle

@@ -85,8 +85,6 @@ struct PreviewState {
     content_type: gtk::Label,
     content: gtk::Box,
     metadata: gtk::Box,
-    media_metadata: gtk::Box,
-    metadata_load: RefCell<Option<super::media_metadata::MetadataLoad>>,
     open: gtk::Button,
     print: gtk::Button,
     wrap: gtk::ToggleButton,
@@ -205,23 +203,6 @@ impl PreviewDrawer {
         });
         pane.append(&metadata);
 
-        let media_metadata = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        media_metadata.add_css_class("preview-metadata");
-        media_metadata.set_visible(false);
-        let metadata_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(true)
-            .max_content_height(200)
-            .child(&media_metadata)
-            .build();
-        metadata_scroll.add_css_class("media-details-scroll");
-        media_metadata
-            .bind_property("visible", &metadata_scroll, "visible")
-            .sync_create()
-            .build();
-        pane.append(&metadata_scroll);
-
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.add_css_class("preview-content");
         content.set_vexpand(true);
@@ -246,8 +227,6 @@ impl PreviewDrawer {
             content_type,
             content,
             metadata,
-            media_metadata,
-            metadata_load: RefCell::new(None),
             open: open.clone(),
             print: print.clone(),
             wrap: wrap.clone(),
@@ -535,7 +514,6 @@ impl PreviewState {
                 self.current_request.set(None);
                 self.load.borrow_mut().take();
                 self.cancel_loading();
-                self.clear_media_metadata();
                 self.pdf_loads.borrow_mut().clear();
                 self.clear_content();
                 self.sizing.defer_load();
@@ -823,23 +801,7 @@ impl PreviewState {
         )
     }
 
-    fn clear_media_metadata(&self) {
-        self.metadata_load.borrow_mut().take();
-        self.media_metadata.set_visible(false);
-        while let Some(child) = self.media_metadata.first_child() {
-            self.media_metadata.remove(&child);
-        }
-    }
-
     fn load(self: &Rc<Self>, entry: FileEntry, pdf_page: i32) {
-        self.clear_media_metadata();
-        if let Some(path) = entry.local_thumbnail_path() {
-            self.metadata_load.replace(Some(super::media_metadata::load(
-                &self.media_metadata,
-                path.to_path_buf(),
-                super::media_metadata::Layout::Preview,
-            )));
-        }
         self.metadata.set_visible(true);
         self.icon.set_visible(true);
         self.open.set_sensitive(true);

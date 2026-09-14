@@ -55,7 +55,6 @@ impl PreviewState {
         self.current.borrow_mut().take();
         self.load.borrow_mut().take();
         self.cancel_loading();
-        self.clear_media_metadata();
         self.pdf_loads.borrow_mut().clear();
         self.clear_content();
         if self.reserves_empty_preview() {
