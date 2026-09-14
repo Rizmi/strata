@@ -57,8 +57,23 @@ impl Drop for CancelOnDrop {
 }
 
 pub(super) async fn stage(entry: &FileEntry) -> Result<StagedPreview, String> {
-    if matches!(entry.size, MetadataValue::Known(size) if size > MAX_REMOTE_PREVIEW_BYTES) {
-        return Err("Remote preview exceeds the 64 MiB download limit".into());
+    stage_with_limit(entry, MAX_REMOTE_PREVIEW_BYTES, REMOTE_PREVIEW_TIMEOUT).await
+}
+
+pub(super) async fn stage_video(entry: &FileEntry) -> Result<StagedPreview, String> {
+    stage_with_limit(entry, 256 * 1024 * 1024, Duration::from_secs(60)).await
+}
+
+async fn stage_with_limit(
+    entry: &FileEntry,
+    byte_limit: u64,
+    timeout: Duration,
+) -> Result<StagedPreview, String> {
+    if matches!(entry.size, MetadataValue::Known(size) if size > byte_limit) {
+        return Err(format!(
+            "Remote preview exceeds the {} MiB download limit",
+            byte_limit / (1024 * 1024)
+        ));
     }
     let file = crate::adapters::gio_file_for_location(&entry.location);
     let suffix = Path::new(&entry.native_name)
@@ -69,16 +84,12 @@ pub(super) async fn stage(entry: &FileEntry) -> Result<StagedPreview, String> {
         })
         .map(|value| format!(".{value}"))
         .unwrap_or_default();
-    transfer(
-        suffix,
-        REMOTE_PREVIEW_TIMEOUT,
-        move |staged, cancellation| {
-            let stream = file
-                .read(Some(cancellation))
-                .map_err(|error| error.to_string())?;
-            copy_bounded(&stream, staged, MAX_REMOTE_PREVIEW_BYTES, cancellation)
-        },
-    )
+    transfer(suffix, timeout, move |staged, cancellation| {
+        let stream = file
+            .read(Some(cancellation))
+            .map_err(|error| error.to_string())?;
+        copy_bounded(&stream, staged, byte_limit, cancellation)
+    })
     .await
 }
 
@@ -144,7 +155,10 @@ fn copy_bounded(
             return Ok(());
         }
         if bytes.len() as u64 > remaining {
-            return Err("Remote preview exceeds the download limit (64 MiB maximum)".into());
+            return Err(format!(
+                "Remote preview exceeds the download limit ({} MiB maximum)",
+                byte_limit / (1024 * 1024)
+            ));
         }
         output
             .write_all(&bytes)

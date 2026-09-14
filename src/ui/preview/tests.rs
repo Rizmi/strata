@@ -219,13 +219,16 @@ fn media_time_formats_minutes_and_seconds_and_clamps_negative_timestamps() {
 }
 
 #[test]
-fn remote_still_images_are_quick_preview_targets_but_pdfs_and_media_are_not() {
+fn remote_images_and_supported_video_are_quick_preview_targets() {
     use crate::model::{EntryKind, FileEntry, Location, MetadataValue};
     for (name, supported) in [
         ("photo.jpg", true),
         ("photo.heic", true),
         ("document.pdf", false),
-        ("video.mp4", false),
+        ("video.mp4", true),
+        ("video.MOV", true),
+        ("video.mkv", false),
+        ("audio.mp3", false),
         ("animated.gif", false),
     ] {
         let entry = FileEntry {

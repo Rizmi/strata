@@ -369,7 +369,10 @@ The camera/PTP entry opens a single **Photos** view: files appear progressively
 from storage/date folders, prioritizing newer date-folder names, without requiring
 you to open each folder. The backend may finish a folder's metadata before
 returning its first batch. This is
-a virtual listing, not a reorganization of the phone. Duplicate filenames remain
+a virtual listing of JPEG, HEIC/HEIF, MOV, MP4, and recognized camera RAW files,
+not a reorganization of the phone. Sidecars such as `.AAE` and other formats are
+hidden only from this Photos view; their originals remain untouched and visible
+in normal folder browsing. Duplicate filenames remain
 separate files with their original locations; use **Copy path** or **Properties**
 to distinguish their sources. Preview, copy, and delete act on those originals.
 This is the USB-exposed collection, not iOS's Albums hierarchy. The current
@@ -387,16 +390,20 @@ phone-side change; not every device supports live change notifications.
 Android MTP and iPhone app-document/AFC entries retain normal folder browsing.
 For Android, open **Internal storage** (the label varies by device).
 
-Still photos can use the preview pane or <kbd>Space</kbd> quick preview directly
-from the phone. Strata downloads a temporary copy for sandboxed decoding, limited
-to 64 MiB and 30 seconds per image, with at most four active staged images per
-process. Closing or changing the preview cancels the request; temporary files are
-removed when their workers finish. Remote PDFs, animated GIFs, audio, and video
-still need a local copy for preview. Camera/PTP thumbnails use small previews
+Still photos (including HEIC) and MOV/MP4 videos can use the preview pane or
+<kbd>Space</kbd> quick preview directly from the phone, without a manual copy.
+Strata first downloads a private temporary input for sandboxed decoding: up to
+64 MiB in 30 seconds for images or 256 MiB in 60 seconds for videos, with at most
+four staged inputs per process. Video playback waits for that download, then
+reuses it for seeking and resizing. Closing or changing the preview cancels the
+request; temporary files are removed after the player and its workers release
+them. Remote PDFs, animated GIFs, audio, and other video formats still need a
+local copy for preview. HEIC decoding requires an installed HEIC-capable image
+decoder, such as ImageMagick with libheif. Camera/PTP thumbnails use small previews
 provided by the camera, with bounded retrieval and sandboxed decoding; if the
 camera cannot supply a thumbnail, Strata keeps the file icon instead of downloading
 the original. Camera thumbnails are cached only in memory. See
-[Remote still-image previews](docs/preview-sandbox.md#remote-still-image-previews)
+[Remote previews](docs/preview-sandbox.md#remote-still-image-previews)
 for cleanup, caching, and sandbox details.
 
 If the phone is missing, check the backend package, try another data cable or USB

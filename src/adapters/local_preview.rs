@@ -269,25 +269,54 @@ impl LocalPreviewProvider {
             }
 
             if matches!(content, PreviewContent::Media) {
-                let Some(path) = entry.location.native_path().map(ToOwned::to_owned) else {
-                    emit(PreviewEvent::Failed {
-                        request_id,
-                        entry,
-                        message: "Only local files can be previewed safely".into(),
-                    });
-                    return;
+                let staged = if entry.location.native_path().is_none() {
+                    if !crate::services::supports_remote_video(&entry.native_name) {
+                        emit(PreviewEvent::Failed {
+                            request_id,
+                            entry,
+                            message: "Copy this media format locally before previewing it".into(),
+                        });
+                        return;
+                    }
+                    match remote::stage_video(&entry).await {
+                        Ok(staged) => Some(staged),
+                        Err(message) => {
+                            if !cancellation_for_task.is_cancelled() {
+                                emit(PreviewEvent::Failed {
+                                    request_id,
+                                    entry,
+                                    message,
+                                });
+                            }
+                            return;
+                        }
+                    }
+                } else {
+                    None
                 };
+                let path = staged
+                    .as_ref()
+                    .map(|input| input.path())
+                    .or_else(|| entry.location.native_path())
+                    .expect("native or staged media")
+                    .to_path_buf();
+                let mut media = SandboxedMedia {
+                    path,
+                    size: request.media_size,
+                    backend: media_preview_backend,
+                    input_owner: None,
+                };
+                if let Some(staged) = staged {
+                    media = media.retain_input(staged);
+                }
+                if cancellation_for_task.is_cancelled() {
+                    return;
+                }
                 emit(PreviewEvent::Ready(Preview {
                     request_id,
                     entry,
                     content_type,
-                    content: PreviewContent::SandboxedMedia {
-                        media: SandboxedMedia {
-                            path,
-                            size: request.media_size,
-                            backend: media_preview_backend,
-                        },
-                    },
+                    content: PreviewContent::SandboxedMedia { media },
                 }));
                 return;
             }

@@ -50,6 +50,56 @@ fn files(events: &[DirectoryEvent]) -> Vec<FileEntry> {
 }
 
 #[test]
+fn camera_media_filter_keeps_requested_formats_without_counting_sidecars() {
+    let root = tempfile::tempdir().expect("camera tree");
+    let included = [
+        "photo.JPG",
+        "photo.jpeg",
+        "photo.HEIC",
+        "photo.heif",
+        "clip.MOV",
+        "clip.mp4",
+        "raw.DNG",
+        "raw.CR3",
+        "raw.nef",
+        "raw.ARW",
+    ];
+    let excluded = [
+        "photo.AAE",
+        "photo.jpg.aae",
+        "photo.PNG",
+        "animated.GIF",
+        "clip.MKV",
+        "metadata.xml",
+        "README",
+        ".AAE",
+    ];
+    for name in included.into_iter().chain(excluded) {
+        fs::write(root.path().join(name), b"unchanged original").expect("camera file");
+    }
+    let events = collect(root.path(), included.len(), Duration::from_secs(4));
+    let entries = files(&events);
+    let names: HashSet<_> = entries
+        .iter()
+        .map(|entry| entry.display_name.as_str())
+        .collect();
+    assert_eq!(names, included.into_iter().collect());
+    assert!(matches!(
+        events.last(),
+        Some(DirectoryEvent::Finished {
+            truncated: false,
+            ..
+        })
+    ));
+    for name in included.into_iter().chain(excluded) {
+        assert_eq!(
+            fs::read(root.path().join(name)).expect("original retained"),
+            b"unchanged original"
+        );
+    }
+}
+
+#[test]
 fn discovers_only_files_across_date_folders_without_collapsing_duplicate_names() {
     let root = tempfile::tempdir().expect("camera tree");
     for folder in ["202401_a", "202402_a/nested", "empty", ".private"] {

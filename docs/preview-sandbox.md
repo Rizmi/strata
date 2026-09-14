@@ -23,7 +23,7 @@ the same image sandbox as local files. Only a short alphanumeric extension is
 preserved; remote names never choose a local path. The displayed entry and its
 actions retain the original URI.
 
-Each transfer has a 64-MiB byte limit and a 30-second total deadline. Known
+Still-image transfers have a 64-MiB byte limit and a 30-second total deadline. Known
 oversized files are rejected before opening; the stream limit also applies when
 size metadata is missing or inaccurate. At most four transfers/staged originals
 can be active per process, including ones waiting for cancellation or decoding.
@@ -38,10 +38,19 @@ request. Normal cleanup does not guarantee removal after a process crash or
 forced termination. Remote previews do not populate the persistent thumbnail
 cache or the in-memory rendered-preview cache, and originals are never modified.
 
-Remote PDFs, animated GIFs, audio, and video remain unsupported: copy them locally
-first. In particular, remote PDF rendering/printing needs a shared document
+MOV and MP4 previews use the same staging boundary, with a 256-MiB byte limit
+and 60-second deadline, and share the four-input admission limit with images.
+Playback starts only after download completes. The sandboxed media descriptor
+retains the temporary file and its admission permit across player clones,
+seeks, resizing, and paused-worker restart. The final player/worker owner removes
+the input, including cancellation and decoder-error paths; no compressed input
+is handed to an in-process media parser.
+
+Remote PDFs, animated GIFs, audio, and other video formats remain unsupported:
+copy them locally first. In particular, remote PDF rendering/printing needs a shared document
 snapshot before it can safely request multiple pages without repeated downloads.
-Supported still-image formats continue to depend on installed sandbox decoder tools.
+Supported still-image formats continue to depend on installed sandbox decoder tools;
+HEIC/HEIF can use ImageMagick with libheif inside the image sandbox.
 
 ### Camera file-list thumbnails
 
@@ -226,8 +235,11 @@ Toolkit versions and the opt-in patches in
 The new player does not use the two patched `GtkGstSink`/`GstPlay` paths, but this
 change neither applies nor retires that patch kit or claims to fix all RAM growth.
 
-By explicit owner decision, the Ubuntu runtime-library alias problem
-[#806](https://github.com/lgse/strata/issues/806) remains outside this change.
-No additional filesystem mounts have been added to work around it. Affected
-installations still fail closed at sandbox startup, before this playback path can
-run; direct helper/GTK tests are not proof that this platform problem is fixed.
+The Ubuntu runtime-library alias problem tracked in
+[#806](https://github.com/lgse/strata/issues/806) was initially deferred. The sandbox
+now includes a read-only optional bind of `/etc/alternatives`, allowing libraries
+such as BLAS to resolve their distribution-managed links into the already mounted
+`/usr` runtime. This does not expose the rest of `/etc` or make symlink targets
+outside the sandbox's mounts accessible. Canonical pinned-container HEIC, MOV,
+and MP4 preview tests exercise actual sandbox startup and decoding; installed
+systems still depend on their available codec libraries.

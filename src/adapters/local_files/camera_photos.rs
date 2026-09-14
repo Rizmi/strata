@@ -106,6 +106,9 @@ impl Library {
                             }
                         }
                         gio::FileType::Regular => {
+                            if !is_photo_media(info.name().as_os_str()) {
+                                continue;
+                            }
                             if self.files == request.max_entries {
                                 self.truncated = true;
                                 break;
@@ -151,6 +154,46 @@ impl Library {
         }
         Ok(())
     }
+}
+
+fn is_photo_media(name: &std::ffi::OsStr) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "jpg"
+                    | "jpeg"
+                    | "heic"
+                    | "heif"
+                    | "mov"
+                    | "mp4"
+                    | "3fr"
+                    | "arw"
+                    | "cr2"
+                    | "cr3"
+                    | "dcr"
+                    | "dng"
+                    | "erf"
+                    | "kdc"
+                    | "mef"
+                    | "mos"
+                    | "mrw"
+                    | "nef"
+                    | "nrw"
+                    | "orf"
+                    | "pef"
+                    | "raf"
+                    | "raw"
+                    | "rw2"
+                    | "rwl"
+                    | "sr2"
+                    | "srf"
+                    | "srw"
+                    | "x3f"
+            )
+        })
 }
 
 #[cfg(test)]

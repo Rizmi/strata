@@ -27,6 +27,106 @@ fn request(path: &Path, name: &str) -> PreviewRequest {
 }
 
 #[test]
+fn uri_video_retains_one_private_input_through_player_clones_and_worker_exit() {
+    crate::test_support::gtk_test(
+        "adapters::local_preview::tests::remote_preview::uri_video_retains_one_private_input_through_player_clones_and_worker_exit",
+        || {
+            use std::os::unix::fs::PermissionsExt;
+            let fixture = tempfile::tempdir().expect("video fixture");
+            let context = glib::MainContext::default();
+            let _owner = context.acquire().expect("context");
+            let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
+            for name in ["clip.MOV", "clip.mp4"] {
+                let original = fixture.path().join(name);
+                fs::write(&original, b"remote video").expect("fixture");
+                let mut request = request(&original, name);
+                request.entry.size = MetadataValue::Known(100 * 1024 * 1024);
+                let location = request.entry.location.clone();
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let emitted = events.clone();
+                let handle = provider.load(
+                    request,
+                    Rc::new(move |event| emitted.borrow_mut().push(event)),
+                );
+                context.block_on(async {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while events.borrow().is_empty() && std::time::Instant::now() < deadline {
+                        glib::timeout_future(Duration::from_millis(1)).await;
+                    }
+                });
+                let event = events.borrow_mut().pop().expect("video ready");
+                let PreviewEvent::Ready(preview) = event else {
+                    panic!("video staging failed: {event:?}");
+                };
+                assert_eq!(preview.entry.location, location);
+                let PreviewContent::SandboxedMedia { media } = preview.content else {
+                    panic!("sandboxed video descriptor required");
+                };
+                let staged = media.path.clone();
+                assert_ne!(staged, original);
+                assert!(media.input_owner.is_some());
+                assert_eq!(
+                    fs::metadata(&staged)
+                        .expect("staged metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+                let mut seek = media.clone();
+                seek.size = MediaPreviewSize::new(320, 200);
+                assert_eq!(seek.path, staged);
+                let worker_source = seek.clone();
+                let (release, wait) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    let source = worker_source;
+                    wait.recv_timeout(Duration::from_secs(5))
+                        .expect("release worker");
+                    assert_eq!(
+                        fs::read(&source.path).expect("worker input"),
+                        b"remote video"
+                    );
+                    drop(source);
+                });
+                drop(handle);
+                drop(media);
+                drop(seek);
+                assert!(
+                    staged.exists(),
+                    "closing the player must not delete an active worker input"
+                );
+                release.send(()).expect("release");
+                worker.join().expect("worker");
+                assert!(!staged.exists(), "last worker releases the staged input");
+                assert_eq!(
+                    fs::read(&original).expect("original unchanged"),
+                    b"remote video"
+                );
+                assert!(crate::ui::thumbnail_cache::lookup(&staged, 1).is_none());
+            }
+            let original = fixture.path().join("oversized.mov");
+            let mut request = request(&original, "oversized.mov");
+            request.entry.size = MetadataValue::Known(257 * 1024 * 1024);
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let emitted = events.clone();
+            let _handle = provider.load(
+                request,
+                Rc::new(move |event| emitted.borrow_mut().push(event)),
+            );
+            context.block_on(async {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while events.borrow().is_empty() && std::time::Instant::now() < deadline {
+                    glib::timeout_future(Duration::from_millis(1)).await;
+                }
+            });
+            assert!(
+                matches!(&events.borrow()[0], PreviewEvent::Failed { message, .. } if message.contains("256 MiB"))
+            );
+        },
+    );
+}
+
+#[test]
 fn uri_images_stage_private_inputs_and_remove_them_after_rendering() {
     crate::test_support::gtk_test(
         "adapters::local_preview::tests::remote_preview::uri_images_stage_private_inputs_and_remove_them_after_rendering",
