@@ -1209,6 +1209,7 @@ impl ViewState {
         // Focus may be unset during transfer; inspect its destination at idle.
         let filter_button_for_blur = filter_button.clone();
         let shell_for_blur = shell.downgrade();
+        let weak_browser_for_blur = Rc::downgrade(&self.browser);
         let filter_focus = gtk::EventControllerFocus::new();
         filter_focus.connect_leave(move |controller| {
             let Some(widget) = controller.widget() else {
@@ -1216,6 +1217,7 @@ impl ViewState {
             };
             let shell_for_blur = shell_for_blur.clone();
             let filter_button_for_blur = filter_button_for_blur.clone();
+            let weak_browser = weak_browser_for_blur.clone();
             glib::idle_add_local_once(move || {
                 let Some(shell) = shell_for_blur.upgrade() else {
                     return;
@@ -1235,7 +1237,11 @@ impl ViewState {
                         && focused != shell.clone().upcast::<gtk::Widget>()
                         && focused.ancestor(gtk::Popover::static_type()).is_none()
                 });
-                if left_column {
+                if left_column
+                    && weak_browser
+                        .upgrade()
+                        .is_some_and(|browser| !browser.is_chooser_mode())
+                {
                     filter_button_for_blur.set_active(false);
                 }
             });

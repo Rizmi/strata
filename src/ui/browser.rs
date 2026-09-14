@@ -1435,9 +1435,16 @@ impl BrowserView {
         if self.view_mode() != BrowserMode::Columns {
             return self.state.mode_views.borrow().selected_search_results();
         }
-        let depth = self.state.destination_depth()?;
         let columns = self.state.columns.borrow();
-        let column = columns.get(depth)?;
+        let depth = self.state.destination_depth();
+        let (depth, column) = depth
+            .and_then(|depth| columns.get(depth).map(|column| (depth, column)))
+            .filter(|(_, column)| column.search_handle.borrow().is_some() || column.map.has_query())
+            .or_else(|| {
+                columns.iter().enumerate().find(|(_, column)| {
+                    column.search_handle.borrow().is_some() || column.map.has_query()
+                })
+            })?;
         if column.search_handle.borrow().is_some() {
             let results = column.search_results.borrow();
             return Some(

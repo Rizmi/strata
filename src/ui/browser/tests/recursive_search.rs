@@ -160,7 +160,12 @@ fn non_native_location_filters_entries_in_columns_mode() {
 
             filter_entry.set_text("Notes");
             let deadline = Instant::now() + Duration::from_secs(5);
-            while view.state.columns.borrow()[0].filtered_model.n_items() != 1 {
+            while view.state.columns.borrow()[0]
+                .map
+                .source_position(0)
+                .and_then(|position| browser.entry_at(0, position))
+                .is_none_or(|entry| entry.location != Location::uri("trash:///Notes"))
+            {
                 assert!(Instant::now() < deadline, "filter did not settle");
                 glib::MainContext::default().iteration(false);
                 std::thread::sleep(Duration::from_millis(2));
@@ -168,7 +173,10 @@ fn non_native_location_filters_entries_in_columns_mode() {
             view.state.columns.borrow()[0]
                 .selection
                 .select_item(0, true);
-            assert_eq!(browser.selected_positions(0), vec![2]);
+            assert_eq!(browser.selected_positions(0), vec![1]);
+            let selected = view.selected_search_results().expect("filtered selection");
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].location, Location::uri("trash:///Notes"));
             assert!(!opened.get(), "trash file should not open on selection");
 
             filter_entry.set_text("");
