@@ -41,6 +41,67 @@ fn shortcuts_configured_in(contents: &str, major: u8) -> bool {
     restored_bindings(contents, major).is_ok_and(|replacement| replacement.is_some())
 }
 
+pub(super) fn install(context: &SetupContext, executable: &Path) -> Result<(), String> {
+    let Some((major, path)) = bindings_path(context) else {
+        return Ok(());
+    };
+    let original = if path.exists() {
+        read_utf8(&path)?
+    } else {
+        String::new()
+    };
+    let updated = installed_bindings(&original, major, &secure_executable(executable)?)?;
+    if original == updated {
+        return reload();
+    }
+    let parent = path.parent().ok_or("Invalid keyboard configuration path")?;
+    fs::create_dir_all(parent).map_err(|error| path_error("create", parent, error))?;
+    replace_bindings(&path, &original, &updated, reload)
+}
+
+fn installed_bindings(original: &str, major: u8, executable: &Path) -> Result<String, String> {
+    let executable = executable
+        .to_str()
+        .ok_or("The shortcut executable path must be UTF-8")?;
+    if !executable.starts_with('/')
+        || !executable
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+    {
+        return Err(
+            "The Strata executable path contains characters unsupported by keyboard shortcuts."
+                .into(),
+        );
+    }
+    let prefix = if major == 4 { "--" } else { "#" };
+    let start = format!("{prefix} strata-installer: file-manager start");
+    let end = format!("{prefix} strata-installer: file-manager end");
+    let commands = if major == 4 {
+        format!(
+            "hl.unbind(\"SUPER + SHIFT + F\")\nhl.unbind(\"SUPER + ALT + SHIFT + F\")\no.bind(\"SUPER + SHIFT + F\", \"File manager\", {{ launch = \"{executable}\" }})\no.bind(\"SUPER + ALT + SHIFT + F\", \"File manager (cwd)\",\n  \"uwsm-app -- {executable} \\\"$(omarchy-cmd-terminal-cwd)\\\"\")"
+        )
+    } else {
+        format!(
+            "unbind = SUPER SHIFT, F\nunbind = SUPER ALT SHIFT, F\nbindd = SUPER SHIFT, F, File manager, exec, uwsm-app -- {executable}\nbindd = SUPER ALT SHIFT, F, File manager (cwd), exec, uwsm-app -- {executable} \"$(omarchy-cmd-terminal-cwd)\""
+        )
+    };
+    let block = format!("{start}\n{commands}\n{end}");
+    if restored_bindings(original, major)?.is_some() {
+        let from = original
+            .find(&start)
+            .ok_or("Missing shortcut block start")?;
+        let to = original.find(&end).ok_or("Missing shortcut block end")? + end.len();
+        Ok(format!("{}{block}{}", &original[..from], &original[to..]))
+    } else {
+        let separator = if original.is_empty() || original.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        Ok(format!("{original}{separator}{block}\n"))
+    }
+}
+
 pub(super) fn restore(context: &SetupContext) -> Result<(), String> {
     let Some((major, path)) = bindings_path(context) else {
         return Ok(());

@@ -51,6 +51,52 @@ fn restore_replaces_both_installer_shortcuts_and_keeps_unrelated_configuration()
 }
 
 #[test]
+fn complete_setup_installs_repairs_and_reinstalls_shortcuts() {
+    for major in [3, 4] {
+        let executable = Path::new("/home/test/strata/target/debug/strata");
+        for original in [
+            String::new(),
+            "unrelated-setting\n".into(),
+            installed(major),
+            restored_bindings(&installed(major), major)
+                .expect("restore")
+                .expect("installed block"),
+        ] {
+            let configured =
+                installed_bindings(&original, major, executable).expect("complete setup");
+            assert!(shortcuts_configured_in(&configured, major));
+            assert_eq!(
+                configured
+                    .matches(executable.to_str().expect("UTF-8 executable"))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                installed_bindings(&configured, major, executable).expect("retry"),
+                configured
+            );
+            if original.starts_with("unrelated-setting") {
+                assert!(configured.starts_with("unrelated-setting\n"));
+            }
+            let restored = restored_bindings(&configured, major)
+                .expect("restore")
+                .expect("configured block");
+            assert!(!shortcuts_configured_in(&restored, major));
+        }
+        let customized = installed(major).replace("File manager (cwd)", "Custom shortcut");
+        assert!(installed_bindings(&customized, major, executable).is_err());
+        for unsafe_path in [
+            "/home/test/my strata",
+            "/home/test/$strata",
+            "/home/test/strata;touch-marker",
+            "/home/test/strata\ncommand",
+        ] {
+            assert!(installed_bindings("", major, Path::new(unsafe_path)).is_err());
+        }
+    }
+}
+
+#[test]
 fn failed_reload_rolls_back_and_keeps_a_backup() {
     let fixture = tempfile::tempdir().expect("valid test fixture");
     let path = fixture.path().join("bindings.lua");

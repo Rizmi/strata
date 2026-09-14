@@ -68,6 +68,7 @@ pub(crate) fn install_file_manager() -> Result<String, String> {
     let previous = query_default_file_manager().filter(|id| id != DESKTOP_ID);
     install_file_manager_at(&context, &executable, previous.as_deref())?;
     set_default_file_manager()?;
+    omarchy::install(&context, &executable)?;
     reload_dbus();
     Ok("Installed Strata as the default file manager. Reveal and Open Containing Folder from other apps will now use Strata.".into())
 }
@@ -509,10 +510,7 @@ pub(crate) fn dismiss_prompt() -> Result<String, String> {
     Ok("File chooser offer dismissed. You can enable it later in Settings → General → System file manager.".into())
 }
 
-pub(crate) fn take_prompt_offer() -> Result<bool, String> {
-    take_prompt_offer_at(&SetupContext::from_environment()?)
-}
-
+#[cfg(test)]
 fn take_prompt_offer_at(context: &SetupContext) -> Result<bool, String> {
     if prompt_path(context).exists() {
         return Ok(false);
