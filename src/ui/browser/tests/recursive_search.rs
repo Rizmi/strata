@@ -150,6 +150,14 @@ fn non_native_location_filters_entries_in_columns_mode() {
                     .is_none()
             );
 
+            let opened = Rc::new(Cell::new(false));
+            let opened_for_observe = opened.clone();
+            browser.observe(move |event| {
+                if matches!(event, crate::app::BrowserEvent::OpenRequested { .. }) {
+                    opened_for_observe.set(true);
+                }
+            });
+
             filter_entry.set_text("Notes");
             let deadline = Instant::now() + Duration::from_secs(5);
             while view.state.columns.borrow()[0].filtered_model.n_items() != 1 {
@@ -161,6 +169,7 @@ fn non_native_location_filters_entries_in_columns_mode() {
                 .selection
                 .select_item(0, true);
             assert_eq!(browser.selected_positions(0), vec![2]);
+            assert!(!opened.get(), "trash file should not open on selection");
 
             filter_entry.set_text("");
             let deadline = Instant::now() + Duration::from_secs(5);
