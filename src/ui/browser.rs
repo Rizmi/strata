@@ -1895,11 +1895,6 @@ impl ViewState {
             } else {
                 "Keyboard · Paste here"
             });
-            columns::update_column_count_hint(
-                column,
-                self.browser.column_entry_counts(depth),
-                show_actions,
-            );
         }
     }
 

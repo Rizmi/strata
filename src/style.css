@@ -2476,17 +2476,19 @@ entry.preview-command-entry selection {
   font-size: 0.85em;
 }
 
+.shortcut-footer-count {
+  color: @theme_text;
+  font-weight: normal;
+}
+
 .shortcut-footer-paste {
   color: @theme_accent;
   background-color: alpha(@theme_accent, 0.10);
   border: 1px solid alpha(@theme_accent, 0.35);
   border-radius: 4px;
+  margin: 2px 0;
   padding: 1px 6px;
   font-weight: bold;
-}
-
-.shortcut-footer-summary {
-  color: @theme_text;
 }
 
 .shortcut-footer-button > button,
@@ -2605,15 +2607,10 @@ entry.preview-command-entry selection {
   border-top: 1px solid transparent;
 }
 
-.destination-column .column-destination-hint,
-.active-column .column-destination-hint {
+.destination-column .column-destination-hint {
   color: @theme_text;
   background: @theme_surface;
   border-top-color: @theme_accent;
-}
-
-.column-destination-hint label {
-  color: inherit;
 }
 
 .directory-column scrolledwindow,

@@ -13,14 +13,6 @@ fn navigation_reference_matches_each_mode() {
             .contains(&("← at left edge", "Focus the visible sidebar"))
     );
     assert!(navigation_shortcuts(BrowserMode::List).contains(&("←", "Focus the visible sidebar")));
-    assert_ne!(
-        summary_shortcuts(BrowserMode::Columns),
-        summary_shortcuts(BrowserMode::Icons)
-    );
-    assert_ne!(
-        summary_shortcuts(BrowserMode::Icons),
-        summary_shortcuts(BrowserMode::List)
-    );
 }
 
 #[test]
@@ -46,6 +38,10 @@ fn footer_tracks_modes_and_shields_files_while_open() {
         return;
     }
     if gtk::init().is_err() {
+        assert!(
+            std::env::var_os("STRATA_REQUIRE_GTK_TESTS").is_none(),
+            "GTK required"
+        );
         return;
     }
     crate::assets::prepare().expect("assets");
@@ -54,6 +50,22 @@ fn footer_tracks_modes_and_shields_files_while_open() {
         super::super::browser::PeekBehavior::default(),
     );
     let footer = ShortcutFooter::new(view.view_mode());
+    footer.observe_browser(&view.browser());
+    let directory = tempfile::tempdir().expect("count fixture");
+    std::fs::write(directory.path().join("one.txt"), "one").expect("first file");
+    std::fs::write(directory.path().join("two.txt"), "two").expect("second file");
+    std::fs::create_dir(directory.path().join("folder")).expect("empty folder");
+    view.browser()
+        .navigate(crate::model::Location::local(directory.path()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while footer.count.text() != "3 items" && std::time::Instant::now() < deadline {
+        settle();
+    }
+    assert_eq!(footer.count.text(), "3 items");
+    assert_eq!(
+        footer.count.tooltip_text().as_deref(),
+        Some("2 files, 1 folder")
+    );
     // Other test windows must not compete for the display's global popup grab.
     footer.popover.set_autohide(false);
     let updated = footer.clone();
@@ -72,14 +84,38 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     settle();
     for mode in [BrowserMode::Icons, BrowserMode::List, BrowserMode::Columns] {
         view.set_view_mode(mode);
-        assert!(
-            footer
-                .summary
-                .text()
-                .starts_with(summary_shortcuts(mode)[0].0)
+        let heading = footer
+            .reference
+            .first_child()
+            .and_then(|section| section.first_child())
+            .and_downcast::<gtk::Label>()
+            .expect("navigation reference heading");
+        assert_eq!(
+            heading.text(),
+            match mode {
+                BrowserMode::Columns => "Columns navigation",
+                BrowserMode::Icons => "Icons navigation",
+                BrowserMode::List => "List navigation",
+            }
         );
         assert!(footer.widget().is_visible());
+        let depth = view.browser().active_depth().expect("active directory");
+        view.browser().set_selection(depth, &[0, 1], Some(1));
+        assert_eq!(footer.count.text(), "2 selected");
+        assert_eq!(
+            footer.count.tooltip_text().as_deref(),
+            Some("2 of 3 items selected")
+        );
+        view.browser().set_selection(depth, &[0], Some(0));
+        assert_eq!(footer.count.text(), "3 items");
+        view.browser().set_selection(depth, &[], None);
+        assert_eq!(footer.count.text(), "3 items");
     }
+    view.browser().navigate(crate::model::Location::local(
+        directory.path().join("folder"),
+    ));
+    settle();
+    assert_eq!(footer.count.text(), "0 items");
     let none = gdk::ModifierType::empty();
     assert_eq!(footer.handle_key(gdk::Key::Delete, none), None);
     assert_eq!(
@@ -156,9 +192,8 @@ impl ShortcutFooter {
     pub(crate) fn assert_hints_visible(&self, visible: bool) {
         assert_eq!(
             self.widget().is_visible(),
-            visible || self.paste.is_visible()
+            visible || self.paste.is_visible() || self.count.is_visible()
         );
-        assert_eq!(self.summary.is_visible(), visible);
         assert_eq!(self.more.is_visible(), visible);
     }
 }
