@@ -2666,6 +2666,14 @@ entry.preview-command-entry selection {
   padding: 2px 5px 4px 12px;
 }
 
+.column-truncated-hint {
+  opacity: 0;
+}
+
+.directory-column:hover .column-truncated-hint {
+  opacity: 1;
+}
+
 .column-heading {
   /* Center title glyphs optically against the square action icons. */
   padding-top: 2px;
