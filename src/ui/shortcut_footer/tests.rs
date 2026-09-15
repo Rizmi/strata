@@ -58,9 +58,16 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     view.browser()
         .navigate(crate::model::Location::local(directory.path()));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while footer.count.text() != "3 items" && std::time::Instant::now() < deadline {
+    while view
+        .browser()
+        .column_entry_counts(0)
+        .map(|counts| counts.total)
+        != Some(3)
+        && std::time::Instant::now() < deadline
+    {
         settle();
     }
+    view.browser().set_selection(0, &[], None);
     assert_eq!(footer.count.text(), "3 items");
     assert_eq!(
         footer.count.tooltip_text().as_deref(),
@@ -100,16 +107,75 @@ fn footer_tracks_modes_and_shields_files_while_open() {
         );
         assert!(footer.widget().is_visible());
         let depth = view.browser().active_depth().expect("active directory");
-        view.browser().set_selection(depth, &[0, 1], Some(1));
-        assert_eq!(footer.count.text(), "2 selected");
-        assert_eq!(
-            footer.count.tooltip_text().as_deref(),
-            Some("2 of 3 items selected")
+        view.browser().set_selection(depth, &[0, 1, 2], Some(2));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while footer.count.text() != "1 folder, 2 files selected (6 B)"
+            && std::time::Instant::now() < deadline
+        {
+            settle();
+        }
+        assert_eq!(footer.count.text(), "1 folder, 2 files selected (6 B)");
+        assert!(
+            footer
+                .count
+                .tooltip_text()
+                .is_some_and(|text| { text.contains("folder contents are not counted") })
         );
-        view.browser().set_selection(depth, &[0], Some(0));
-        assert_eq!(footer.count.text(), "3 items");
+        let folder = (0..3)
+            .find(|position| {
+                view.browser()
+                    .entry_at(depth, *position)
+                    .is_some_and(|entry| entry.is_directory())
+            })
+            .expect("folder position");
+        let file = (0..3)
+            .find(|position| *position != folder)
+            .expect("file position");
+        view.browser().set_selection(depth, &[folder], Some(folder));
+        assert_eq!(footer.count.text(), "1 folder selected");
+        view.browser().set_selection(depth, &[file], Some(file));
+        assert_eq!(footer.count.text(), "1 file selected (3 B)");
         view.browser().set_selection(depth, &[], None);
         assert_eq!(footer.count.text(), "3 items");
+    }
+    let mut files = (0..3)
+        .filter_map(|position| view.browser().entry_at(0, position))
+        .filter(|entry| !entry.is_directory())
+        .collect::<Vec<_>>();
+    for (sizes, expected) in [
+        (
+            [
+                crate::model::MetadataValue::Known(0),
+                crate::model::MetadataValue::Known(0),
+            ],
+            "2 files selected (0 B)",
+        ),
+        (
+            [
+                crate::model::MetadataValue::Known(64_000_000),
+                crate::model::MetadataValue::Known(0),
+            ],
+            "2 files selected (64 MB)",
+        ),
+        (
+            [
+                crate::model::MetadataValue::Known(3),
+                crate::model::MetadataValue::Unknown,
+            ],
+            "2 files selected (3 B known; size incomplete)",
+        ),
+        (
+            [
+                crate::model::MetadataValue::Unavailable,
+                crate::model::MetadataValue::Unknown,
+            ],
+            "2 files selected (size unavailable)",
+        ),
+    ] {
+        for (entry, size) in files.iter_mut().zip(sizes) {
+            entry.size = size;
+        }
+        assert_eq!(selection_details(&files), expected);
     }
     view.browser().navigate(crate::model::Location::local(
         directory.path().join("folder"),

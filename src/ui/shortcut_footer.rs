@@ -383,19 +383,27 @@ impl ShortcutFooter {
     }
 }
 
-fn update_item_count(label: &gtk::Label, browser: &crate::app::Browser) {
+fn update_item_count(label: &gtk::Label, browser: &Rc<crate::app::Browser>) {
     let Some(depth) = browser.active_depth() else {
         label.set_visible(false);
         return;
     };
     let counts = browser.column_entry_counts(depth).unwrap_or_default();
-    let selected = browser.selected_positions(depth).len();
+    let selected = browser.selected_entries();
+    for position in browser.selected_positions(depth) {
+        if let Some(entry) = browser.entry_at(depth, position)
+            && !entry.is_directory()
+            && entry.size == crate::model::MetadataValue::Unknown
+        {
+            browser.request_metadata_fill(depth, position, entry.location, false);
+        }
+    }
     let noun = if counts.total == 1 { "item" } else { "items" };
-    if selected >= 2 {
-        label.set_label(&format!("{selected} selected"));
+    if !selected.is_empty() {
+        label.set_label(&selection_details(&selected));
         label.set_tooltip_text(Some(&format!(
-            "{selected} of {} {noun} selected",
-            counts.total
+            "{} of {} {noun} selected. Size includes selected files only; folder contents are not counted.",
+            selected.len(), counts.total
         )));
     } else {
         label.set_label(&format!("{} {noun}", counts.total));
@@ -411,6 +419,40 @@ fn update_item_count(label: &gtk::Label, browser: &crate::app::Browser) {
         )));
     }
     label.set_visible(true);
+}
+
+fn selection_details(entries: &[crate::model::FileEntry]) -> String {
+    let folders = entries.iter().filter(|entry| entry.is_directory()).count();
+    let files = entries.len() - folders;
+    let mut parts = Vec::new();
+    if folders > 0 {
+        let noun = if folders == 1 { "folder" } else { "folders" };
+        parts.push(format!("{folders} {noun}"));
+    }
+    if files > 0 {
+        let noun = if files == 1 { "file" } else { "files" };
+        parts.push(format!("{files} {noun}"));
+    }
+    let mut text = format!("{} selected", parts.join(", "));
+    if files > 0 {
+        let mut bytes = 0u64;
+        let mut known = 0;
+        for entry in entries.iter().filter(|entry| !entry.is_directory()) {
+            if let crate::model::MetadataValue::Known(size) = entry.size {
+                bytes = bytes.saturating_add(size);
+                known += 1;
+            }
+        }
+        let size = super::browser::format_file_size(bytes);
+        if known == files {
+            text.push_str(&format!(" ({size})"));
+        } else if known > 0 {
+            text.push_str(&format!(" ({size} known; size incomplete)"));
+        } else {
+            text.push_str(" (size unavailable)");
+        }
+    }
+    text
 }
 
 fn refresh_paste_availability(
