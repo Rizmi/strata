@@ -152,3 +152,82 @@ fn reveal_target_can_scroll_back_to_an_earlier_column() {
         252.0
     );
 }
+
+#[test]
+fn format_column_count_hint_totals_selections_and_filters() {
+    let (text, tooltip) = format_column_count_hint(
+        0,
+        Some(ColumnEntryCounts {
+            total: 0,
+            files: 0,
+            folders: 0,
+        }),
+        false,
+        0,
+    );
+    assert_eq!(text, "0 items");
+    assert_eq!(tooltip, "0 items");
+
+    let (text, tooltip) = format_column_count_hint(
+        0,
+        Some(ColumnEntryCounts {
+            total: 1,
+            files: 1,
+            folders: 0,
+        }),
+        false,
+        1,
+    );
+    assert_eq!(text, "1 item");
+    assert_eq!(tooltip, "1 file");
+
+    let (text, tooltip) = format_column_count_hint(
+        0,
+        Some(ColumnEntryCounts {
+            total: 1,
+            files: 0,
+            folders: 1,
+        }),
+        false,
+        1,
+    );
+    assert_eq!(text, "1 item");
+    assert_eq!(tooltip, "1 folder");
+
+    let counts = Some(ColumnEntryCounts {
+        total: 15,
+        files: 5,
+        folders: 10,
+    });
+    let (text, tooltip) = format_column_count_hint(0, counts, false, 15);
+    assert_eq!(text, "15 items");
+    assert_eq!(tooltip, "5 files, 10 folders");
+
+    let (text, tooltip) = format_column_count_hint(1, counts, false, 15);
+    assert_eq!(text, "15 items");
+    assert_eq!(tooltip, "5 files, 10 folders");
+
+    let (text, tooltip) = format_column_count_hint(2, counts, false, 15);
+    assert_eq!(text, "2 selected");
+    assert_eq!(tooltip, "2 of 15 items selected");
+
+    let (text, tooltip) = format_column_count_hint(3, counts, false, 15);
+    assert_eq!(text, "3 selected");
+    assert_eq!(tooltip, "3 of 15 items selected");
+
+    let (text, tooltip) = format_column_count_hint(0, counts, true, 0);
+    assert_eq!(text, "0 matches");
+    assert_eq!(tooltip, "0 of 15 items match filter");
+
+    let (text, tooltip) = format_column_count_hint(0, counts, true, 1);
+    assert_eq!(text, "1 match");
+    assert_eq!(tooltip, "1 of 15 items matches filter");
+
+    let (text, tooltip) = format_column_count_hint(0, counts, true, 4);
+    assert_eq!(text, "4 matches");
+    assert_eq!(tooltip, "4 of 15 items match filter");
+
+    let (text, tooltip) = format_column_count_hint(2, counts, true, 4);
+    assert_eq!(text, "2 selected");
+    assert_eq!(tooltip, "2 of 15 items selected");
+}

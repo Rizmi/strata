@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+use crate::app::ColumnEntryCounts;
 use crate::model::{FileEntry, Location};
 use crate::services::fold_for_search;
 use crate::ui::browser::ViewState;
@@ -71,6 +72,7 @@ pub(super) struct ColumnView {
     pub(super) shell: gtk::Box,
     pub(super) reveal_button: gtk::Button,
     pub(super) destination_hint: gtk::Label,
+    pub(super) count_hint: gtk::Label,
     pub(super) animation_generation: Rc<Cell<u64>>,
     pub(super) presentation: LoadPresentation,
     pub(super) model: EntryListModel,
@@ -213,6 +215,88 @@ pub(super) fn set_filter_placeholder(column: &ColumnView, count: usize) {
     column
         .filter_entry
         .set_placeholder_text(Some(&format!("Filter {count} {noun}…")));
+}
+
+pub(super) fn format_column_count_hint(
+    selected_count: usize,
+    counts: Option<ColumnEntryCounts>,
+    filter_active: bool,
+    match_count: usize,
+) -> (String, String) {
+    let counts = counts.unwrap_or_default();
+    if selected_count >= 2 {
+        let text = format!("{selected_count} selected");
+        let noun = if counts.total == 1 { "item" } else { "items" };
+        let tooltip = format!("{selected_count} of {} {noun} selected", counts.total);
+        (text, tooltip)
+    } else if filter_active {
+        let text = if match_count == 1 {
+            "1 match".to_string()
+        } else {
+            format!("{match_count} matches")
+        };
+        let match_verb = if match_count == 1 { "matches" } else { "match" };
+        let noun = if counts.total == 1 { "item" } else { "items" };
+        let tooltip = format!(
+            "{match_count} of {} {noun} {match_verb} filter",
+            counts.total
+        );
+        (text, tooltip)
+    } else {
+        let text = if counts.total == 1 {
+            "1 item".to_string()
+        } else {
+            format!("{} items", counts.total)
+        };
+        let tooltip = if counts.total == 0 {
+            "0 items".to_string()
+        } else if counts.files > 0 && counts.folders > 0 {
+            let files_str = if counts.files == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", counts.files)
+            };
+            let folders_str = if counts.folders == 1 {
+                "1 folder".to_string()
+            } else {
+                format!("{} folders", counts.folders)
+            };
+            format!("{files_str}, {folders_str}")
+        } else if counts.files > 0 {
+            if counts.files == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", counts.files)
+            }
+        } else if counts.folders == 1 {
+            "1 folder".to_string()
+        } else {
+            format!("{} folders", counts.folders)
+        };
+        (text, tooltip)
+    }
+}
+
+pub(super) fn update_column_count_hint(
+    column: &ColumnView,
+    counts: Option<ColumnEntryCounts>,
+    active: bool,
+) {
+    if !active {
+        column.count_hint.set_label("");
+        column.count_hint.set_tooltip_text(None);
+        return;
+    }
+    let selected_count = column.selection.selection().size() as usize;
+    let query = column.filter_entry.text();
+    let filter_active = !query.trim().is_empty()
+        || column.search_handle.borrow().is_some()
+        || !column.search_results.borrow().is_empty();
+    let match_count = column.selection.n_items() as usize;
+    let (text, tooltip) =
+        format_column_count_hint(selected_count, counts, filter_active, match_count);
+    column.count_hint.set_label(&text);
+    column.count_hint.set_tooltip_text(Some(&tooltip));
 }
 
 pub(super) fn touch_source_model(column: &ColumnView) {
@@ -490,7 +574,14 @@ impl ViewState {
         for (offset, snapshot) in snapshots.iter().enumerate() {
             self.append_column(from_depth + offset, &snapshot.location);
         }
-        for (column, snapshot) in self.columns.borrow().iter().skip(from_depth).zip(snapshots) {
+        for (offset, (column, snapshot)) in self
+            .columns
+            .borrow()
+            .iter()
+            .skip(from_depth)
+            .zip(snapshots)
+            .enumerate()
+        {
             touch_source_model(column);
             column.model.replace(snapshot.count as u32);
             column.entry_count.set(snapshot.count);
@@ -503,6 +594,11 @@ impl ViewState {
                 .filter_map(|position| column.map.view_position(position))
                 .collect::<Vec<_>>();
             set_column_selections(column, &positions);
+            update_column_count_hint(
+                column,
+                self.browser.column_entry_counts(from_depth + offset),
+                column.shell.has_css_class("active-column"),
+            );
             if snapshot.loading {
                 cancel_column_spinner(column);
                 column.spinner.set_visible(true);
@@ -704,6 +800,19 @@ impl ViewState {
         let show_hidden = Rc::new(Cell::new(initial_show_hidden));
         let filter = entry_filter(show_hidden.clone(), filter_query.clone());
         let filtered_model = gtk::FilterListModel::new(Some(model.clone()), Some(filter.clone()));
+        let weak_state_for_items = Rc::downgrade(self);
+        let depth_for_items = depth;
+        filtered_model.connect_items_changed(move |_, _, _, _| {
+            if let Some(state) = weak_state_for_items.upgrade()
+                && let Some(column) = state.columns.borrow().get(depth_for_items)
+            {
+                update_column_count_hint(
+                    column,
+                    state.browser.column_entry_counts(depth_for_items),
+                    column.shell.has_css_class("active-column"),
+                );
+            }
+        });
         let map = ViewMap::new(
             filter_query.clone(),
             show_hidden.clone(),
@@ -775,6 +884,19 @@ impl ViewState {
             Rc::new(RefCell::new(None));
         let search_generation: Rc<Cell<u64>> = Rc::new(Cell::new(0));
         let search_model = gtk::StringList::new(&[]);
+        let weak_state_for_search_items = Rc::downgrade(self);
+        let depth_for_search_items = depth;
+        search_model.connect_items_changed(move |_, _, _, _| {
+            if let Some(state) = weak_state_for_search_items.upgrade()
+                && let Some(column) = state.columns.borrow().get(depth_for_search_items)
+            {
+                update_column_count_hint(
+                    column,
+                    state.browser.column_entry_counts(depth_for_search_items),
+                    column.shell.has_css_class("active-column"),
+                );
+            }
+        });
 
         let weak_state_for_search = Rc::downgrade(self);
         let depth_for_search = depth;
@@ -1218,13 +1340,26 @@ impl ViewState {
             )
         };
         column.append(&presentation.stack);
+        let footer = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        footer.add_css_class("column-destination-hint");
+
         let destination_hint = gtk::Label::new(None);
-        destination_hint.add_css_class("column-destination-hint");
         destination_hint.set_xalign(0.0);
+        destination_hint.set_hexpand(true);
+        destination_hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
         destination_hint.set_tooltip_text(Some(
             "Ctrl+V pastes into this directory. Move the pointer to target another column, or navigate with the keyboard to return control to keyboard focus.",
         ));
-        column.append(&destination_hint);
+
+        let count_hint = gtk::Label::new(None);
+        count_hint.add_css_class("column-count-hint");
+        count_hint.set_xalign(1.0);
+        count_hint.set_halign(gtk::Align::End);
+        count_hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+        footer.append(&destination_hint);
+        footer.append(&count_hint);
+        column.append(&footer);
 
         let shell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
 
@@ -1377,6 +1512,7 @@ impl ViewState {
             shell: shell.clone(),
             reveal_button,
             destination_hint,
+            count_hint,
             animation_generation: animation_generation.clone(),
             presentation,
             model,
@@ -1410,6 +1546,11 @@ impl ViewState {
         });
 
         if let Some(column) = self.columns.borrow().last() {
+            update_column_count_hint(
+                column,
+                self.browser.column_entry_counts(depth),
+                column.shell.has_css_class("active-column"),
+            );
             set_column_busy(column, true);
             arm_column_spinner(column);
         }

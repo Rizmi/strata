@@ -10,7 +10,7 @@ use crate::ui::browser::ViewState;
 use crate::ui::browser::columns::{
     column_size_text, prune_missing_search_results, restore_column_cursor, scroll_column_to,
     set_column_busy, set_column_selections, set_filter_placeholder, stop_column_spinner,
-    touch_source_model, update_empty_trash_sensitivity,
+    touch_source_model, update_column_count_hint, update_empty_trash_sensitivity,
 };
 use crate::ui::browser::desktop::open_location;
 use crate::ui::browser::entry::item_count_label;
@@ -114,6 +114,11 @@ impl ViewState {
                     let count = column.entry_count.get() + entry_count;
                     column.entry_count.set(count);
                     set_filter_placeholder(&column, count);
+                    update_column_count_hint(
+                        &column,
+                        self.browser.column_entry_counts(*depth),
+                        column.shell.has_css_class("active-column"),
+                    );
                     update_empty_trash_sensitivity(&column, count);
                     set_column_busy(&column, false);
                     if let Some(top) = top {
@@ -136,6 +141,11 @@ impl ViewState {
                     column.model.replace(*count as u32);
                     column.entry_count.set(*count);
                     set_filter_placeholder(&column, *count);
+                    update_column_count_hint(
+                        &column,
+                        self.browser.column_entry_counts(*depth),
+                        column.shell.has_css_class("active-column"),
+                    );
                     update_empty_trash_sensitivity(&column, *count);
                 }
             }
@@ -154,6 +164,11 @@ impl ViewState {
                     let total = column.entry_count.get().saturating_add(*count);
                     column.entry_count.set(total);
                     set_filter_placeholder(&column, total);
+                    update_column_count_hint(
+                        &column,
+                        self.browser.column_entry_counts(*depth),
+                        column.shell.has_css_class("active-column"),
+                    );
                     update_empty_trash_sensitivity(&column, total);
                     set_column_busy(&column, false);
                     crate::metrics::mark_batch_rendered(*count, render_started);
@@ -253,6 +268,11 @@ impl ViewState {
                         .filter_map(|position| column.map.view_position(position))
                         .collect();
                     set_column_selections(column, &positions);
+                    update_column_count_hint(
+                        column,
+                        self.browser.column_entry_counts(*depth),
+                        column.shell.has_css_class("active-column"),
+                    );
                     if restore_cursor
                         && let Some((focused_depth, position, _)) = self.browser.focused_item()
                         && focused_depth == *depth
@@ -303,6 +323,11 @@ impl ViewState {
                     column.model.replace(0);
                     column.entry_count.set(0);
                     set_filter_placeholder(column, 0);
+                    update_column_count_hint(
+                        column,
+                        self.browser.column_entry_counts(*depth),
+                        column.shell.has_css_class("active-column"),
+                    );
                     column.truncated_hint.set_visible(false);
                     column.spinner.set_visible(true);
                     column.spinner.start();
@@ -311,10 +336,15 @@ impl ViewState {
                 }
             }
             BrowserEvent::HiddenToggled { show_hidden } => {
-                for column in self.columns.borrow().iter() {
+                for (depth, column) in self.columns.borrow().iter().enumerate() {
                     column.show_hidden.set(*show_hidden);
                     touch_source_model(column);
                     column.filter.changed(gtk::FilterChange::Different);
+                    update_column_count_hint(
+                        column,
+                        self.browser.column_entry_counts(depth),
+                        column.shell.has_css_class("active-column"),
+                    );
                 }
                 self.mode_views.borrow().set_show_hidden(*show_hidden);
             }

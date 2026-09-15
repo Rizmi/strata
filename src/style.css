@@ -2605,10 +2605,15 @@ entry.preview-command-entry selection {
   border-top: 1px solid transparent;
 }
 
-.destination-column .column-destination-hint {
+.destination-column .column-destination-hint,
+.active-column .column-destination-hint {
   color: @theme_text;
   background: @theme_surface;
   border-top-color: @theme_accent;
+}
+
+.column-destination-hint label {
+  color: inherit;
 }
 
 .directory-column scrolledwindow,
