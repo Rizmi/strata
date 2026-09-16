@@ -983,6 +983,57 @@ pub(super) struct SidebarView {
 }
 
 impl SidebarView {
+    /// Defers device discovery until after the window paints its first frame, ensuring
+    /// file chooser dialogs present immediately. Handles pre-mapped windows directly,
+    /// falls back to idle scheduling if no frame clock is available (such as in headless
+    /// test harnesses), and uses a weak reference so closing the chooser safely aborts.
+    pub(in crate::ui) fn schedule_after_first_paint(&self, window: &impl IsA<gtk::Widget>) {
+        let weak_state = Rc::downgrade(&self.state);
+        let armed = Rc::new(Cell::new(false));
+        let arm = {
+            let weak_state = weak_state.clone();
+            let armed = armed.clone();
+            move |widget: &gtk::Widget| {
+                if armed.get() {
+                    return;
+                }
+                armed.set(true);
+                let Some(clock) = widget.frame_clock() else {
+                    let weak = weak_state.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = weak.upgrade() {
+                            state.rebuild();
+                        }
+                    });
+                    return;
+                };
+                let handler = Rc::new(RefCell::new(None));
+                let handler_for_paint = handler.clone();
+                let weak = weak_state.clone();
+                let id = clock.connect_after_paint(move |clock| {
+                    if let Some(id) = handler_for_paint.borrow_mut().take() {
+                        clock.disconnect(id);
+                    }
+                    let weak = weak.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = weak.upgrade() {
+                            state.rebuild();
+                        }
+                    });
+                });
+                handler.replace(Some(id));
+            }
+        };
+        if window.is_mapped() {
+            arm(window.upcast_ref());
+        } else {
+            let arm_on_map = arm.clone();
+            window.connect_map(move |widget| {
+                arm_on_map(widget.upcast_ref());
+            });
+        }
+    }
+
     pub(super) fn disconnect(&self) {
         for handler in self.handlers.take() {
             self.state.volume_monitor.disconnect(handler);
@@ -1613,10 +1664,20 @@ impl SidebarState {
         if let Some(mount) = volume.get_mount()
             && let Some(location) = location_for_file(&mount.root())
         {
+            if self.local_only && location.native_path().is_none() {
+                return;
+            }
             self.place_rows
                 .borrow_mut()
                 .push((location.clone(), row.clone()));
             install_sidebar_file_drop(&self.view, &row, location);
+        } else if self.local_only
+            && (gio_volume_unix_device(&volume).is_none()
+                || volume
+                    .activation_root()
+                    .is_some_and(|root| root.path().is_none()))
+        {
+            return;
         }
         let weak_browser = Rc::downgrade(&self.browser);
         let sidebar = self.widget.clone();
