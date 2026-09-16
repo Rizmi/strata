@@ -35,7 +35,7 @@ pub(super) fn show_search_exclusions_dialog(
     };
 
     let layout = modal_layout(
-        icons::FOLDER,
+        icons::SEARCH,
         "Search exclusions",
         "Folders and directories excluded from search",
         "Done",
