@@ -122,6 +122,28 @@ fn append_browsing_options(content: &gtk::Box, manager: &Rc<ThemeManager>) {
     ] {
         append_preference_switch(&search, manager, switch);
     }
+    append_search_exclusions_option(&search, manager);
+}
+
+fn append_search_exclusions_option(content: &gtk::Box, manager: &Rc<ThemeManager>) {
+    let manage = gtk::Button::with_label("Manage…");
+    manage.set_valign(gtk::Align::Center);
+    manage.add_css_class("form-control");
+    manage.add_css_class("settings-choice");
+    manage.set_tooltip_text(Some("Manage folders and directories excluded from search"));
+    super::super::accessibility::set_label(&manage, "Search exclusions");
+
+    let manager_for_click = manager.clone();
+    manage.connect_clicked(move |button| {
+        super::exclusions::show_search_exclusions_dialog(button, &manager_for_click);
+    });
+
+    let row = super::control_row(
+        "Search exclusions",
+        "Folders and directories excluded from search.",
+        &manage,
+    );
+    content.append(&row);
 }
 
 fn append_preference_switch(

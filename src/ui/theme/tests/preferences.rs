@@ -16,6 +16,7 @@ fn non_default_preferences() -> Preferences {
         hardware_accelerated_video_previews: Some(false),
         video_preview_backend: "vulkan".into(),
         search_open_files_directly: true,
+        search_exclusions: vec![".venv".into(), "/fixture/custom_excluded".into()],
         type_to_search: false,
         arrow_navigation_scoped: true,
         filter_include_subfolders: false,
