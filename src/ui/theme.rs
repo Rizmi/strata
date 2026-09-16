@@ -542,6 +542,9 @@ impl ThemeManager {
     }
 
     pub fn set_search_exclusions(&self, exclusions: Vec<String>) {
+        if self.preferences.borrow().search_exclusions == exclusions {
+            return;
+        }
         self.preferences.borrow_mut().search_exclusions = exclusions;
         self.save_preferences();
     }

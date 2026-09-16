@@ -143,6 +143,7 @@ fn append_search_exclusions_option(content: &gtk::Box, manager: &Rc<ThemeManager
         "Folders and directories excluded from search.",
         &manage,
     );
+    super::search::tag(&row, "Search exclusions");
     content.append(&row);
 }
 
@@ -235,11 +236,9 @@ fn default_directory_text(path: Option<std::path::PathBuf>) -> String {
     }
 }
 
-fn abbreviate_home(path: &std::path::Path) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    if let Some(home) = home
-        && let Ok(rest) = path.strip_prefix(&home)
-    {
+pub(crate) fn abbreviate_home(path: &std::path::Path) -> String {
+    let home = glib::home_dir();
+    if let Ok(rest) = path.strip_prefix(&home) {
         format!("~/{}", rest.display())
     } else {
         path.display().to_string()

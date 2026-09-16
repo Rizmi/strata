@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-use std::{
-    cell::RefCell,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc};
 
 use gtk::{gio, glib, prelude::*};
 
 use crate::{
     assets::icons,
+    services::SearchExclusions,
     ui::{
         controls::{form_entry, form_error_label, form_label, modal_layout, set_form_field_error},
         modal::{ModalHost, dismiss_modal_layer, modal_layer},
@@ -74,6 +71,7 @@ pub(super) fn show_search_exclusions_dialog(
     layout.body.append(&input_row);
     layout.body.append(&error_label);
 
+    // Reuse modal suggestion list styles for visual consistency with the Copy to dialog.
     let exclusions_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
     exclusions_box.add_css_class("transfer-suggestions");
 
@@ -94,7 +92,7 @@ pub(super) fn show_search_exclusions_dialog(
     let on_remove_cell = on_remove.clone();
     *on_remove.borrow_mut() = Some(Rc::new(move |item_to_remove: &str| {
         let mut current = manager_for_remove.search_exclusions();
-        current.retain(|candidate| candidate != item_to_remove);
+        current.retain(|candidate| !candidate.eq_ignore_ascii_case(item_to_remove));
         manager_for_remove.set_search_exclusions(current);
         if let Some(ref cb) = *on_remove_cell.borrow() {
             render_exclusion_rows(&box_for_remove, &manager_for_remove, cb.clone());
@@ -114,6 +112,15 @@ pub(super) fn show_search_exclusions_dialog(
         let raw = field_for_add.text().to_string();
         let trimmed = raw.trim().trim_end_matches(['/', '\\']).to_string();
         if trimmed.is_empty() {
+            set_form_field_error(&field_for_add, &error_for_add, None);
+            return;
+        }
+        if trimmed == "~" || trimmed == "/" || trimmed == "\\" {
+            set_form_field_error(
+                &field_for_add,
+                &error_for_add,
+                Some("Cannot exclude root or entire home directory."),
+            );
             return;
         }
         let mut current = manager_for_add.search_exclusions();
@@ -142,6 +149,12 @@ pub(super) fn show_search_exclusions_dialog(
         do_add_activate();
     });
 
+    let error_for_change = error_label.clone();
+    let field_for_change = field.clone();
+    field.connect_changed(move |_| {
+        set_form_field_error(&field_for_change, &error_for_change, None);
+    });
+
     let do_add_click = do_add.clone();
     add_btn.connect_clicked(move |_| {
         do_add_click();
@@ -164,7 +177,7 @@ pub(super) fn show_search_exclusions_dialog(
                 return;
             };
             if let Some(path) = file.path() {
-                let display = format_display_path(&path);
+                let display = super::general::abbreviate_home(&path);
                 set_form_field_error(&field, &error, None);
                 field.set_text(&display);
                 field.set_position(-1);
@@ -211,17 +224,6 @@ pub(super) fn show_search_exclusions_dialog(
     field.grab_focus();
 }
 
-fn format_display_path(path: &Path) -> String {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    if let Some(home) = home
-        && let Ok(rest) = path.strip_prefix(&home)
-    {
-        format!("~/{}", rest.display())
-    } else {
-        path.display().to_string()
-    }
-}
-
 fn render_exclusion_rows(container: &gtk::Box, manager: &ThemeManager, on_remove: RemoveAction) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -248,10 +250,7 @@ fn render_exclusion_rows(container: &gtk::Box, manager: &ThemeManager, on_remove
         name_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
         row.append(&name_label);
 
-        let is_path = item.starts_with('~')
-            || item.starts_with('/')
-            || item.contains('/')
-            || item.contains('\\');
+        let is_path = SearchExclusions::is_directory_path(&item);
         let type_label = gtk::Label::new(Some(if is_path { "Directory" } else { "Folder name" }));
         type_label.add_css_class("transfer-suggestion-parent");
         type_label.set_xalign(1.0);

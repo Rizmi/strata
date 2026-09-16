@@ -314,7 +314,7 @@ pub(crate) use pattern::filter_name_matches;
 
 type SearchScorer = fn(&SearchItem, &str) -> Option<i64>;
 
-type IndexRegistry = HashMap<(Vec<PathBuf>, bool, bool, Vec<String>), Weak<SharedIndex>>;
+type IndexRegistry = HashMap<(Vec<PathBuf>, bool, bool, SearchExclusions), Weak<SharedIndex>>;
 static SHARED_INDEXES: OnceLock<Mutex<IndexRegistry>> = OnceLock::new();
 
 pub struct SearchHandle {
@@ -341,6 +341,8 @@ impl Drop for SearchHandle {
     }
 }
 
+// Destination and filter searches intentionally skip user exclusions; they show
+// the directory the user is already browsing rather than the global search scope.
 pub fn index_tree(root: PathBuf, show_hidden: bool) -> (SearchHandle, Receiver<SearchEvent>) {
     index_trees(vec![root], show_hidden)
 }
@@ -388,7 +390,13 @@ fn index_scoped(
         .into_iter()
         .filter(|root| seen.insert(root.clone()))
         .collect();
-    let key = (roots.clone(), show_hidden, recursive, exclusions.clone());
+    let search_exclusions = SearchExclusions::from_strings(&exclusions);
+    let key = (
+        roots.clone(),
+        show_hidden,
+        recursive,
+        search_exclusions.clone(),
+    );
     let registry = SHARED_INDEXES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut registry = registry
         .lock()
@@ -403,7 +411,6 @@ fn index_scoped(
     } else {
         let index = Arc::new(SharedIndex::new());
         registry.insert(key, Arc::downgrade(&index));
-        let search_exclusions = SearchExclusions::from_strings(&exclusions);
         start_indexer(
             index.clone(),
             roots,
@@ -665,6 +672,17 @@ impl Ord for ScheduledDirectory {
     }
 }
 
+fn escape_glob(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
 fn directory_walker(
     task: &DirectoryTask,
     boundaries: Arc<HashSet<PathBuf>>,
@@ -678,7 +696,8 @@ fn directory_walker(
             .expect("valid generated-tree prune glob");
     }
     for folder_name in &exclusions.folder_names {
-        let pattern = format!("!**/{folder_name}/");
+        let escaped = escape_glob(folder_name);
+        let pattern = format!("!**/{escaped}/");
         let _ = overrides.add(&pattern);
     }
     let mut builder = ignore::WalkBuilder::new(&task.path);
@@ -689,9 +708,13 @@ fn directory_walker(
         .hidden(!show_hidden)
         .require_git(false)
         .overrides(overrides.build().unwrap_or_else(|_| {
-            ignore::overrides::OverrideBuilder::new(&task.root)
-                .build()
-                .expect("valid fallback override")
+            let mut fallback = ignore::overrides::OverrideBuilder::new(&task.root);
+            for generated_tree in GENERATED_TREE_GLOBS {
+                fallback
+                    .add(generated_tree)
+                    .expect("valid generated-tree prune glob");
+            }
+            fallback.build().expect("valid fallback override")
         }))
         .max_depth(Some(1))
         // Nested mounts are walked separately, never through both roots.
@@ -795,6 +818,9 @@ fn build_index(
             exclusions.is_excluded(&directory.path, &dir_name, true)
         };
         if is_dir_excluded {
+            if !branch.is_empty() {
+                pending_branches.push_back(branch);
+            }
             continue 'walk;
         }
         let mut new_branches = Vec::new();
