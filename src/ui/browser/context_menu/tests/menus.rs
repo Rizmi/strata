@@ -612,6 +612,7 @@ fn open_file_location_navigates_to_parent_folder_and_selects_file() {
                 let open_button = button_with_label(menu.upcast_ref(), "Open file location");
                 open_button.emit_clicked();
                 wait_until(|| menu.parent().is_none());
+                wait_until(|| label(&view.widget(), "nested_folder").is_some());
 
                 wait_until(|| {
                     view.browser().active_location().as_ref()
