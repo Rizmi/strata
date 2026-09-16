@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct SearchExclusions {
-    pub folder_names: Vec<String>,
-    pub directories: Vec<PathBuf>,
+    pub(crate) folder_names: Vec<String>,
+    pub(crate) directories: Vec<PathBuf>,
 }
 
 impl SearchExclusions {
@@ -18,8 +18,8 @@ impl SearchExclusions {
         let mut directories = Vec::new();
         let home = glib::home_dir();
         for item in raw {
-            let trimmed = item.trim().trim_end_matches(['/', '\\']);
-            if trimmed.is_empty() || trimmed == "~" || trimmed == "/" || trimmed == "\\" {
+            let trimmed = item.trim().trim_end_matches('/');
+            if trimmed.is_empty() || trimmed == "~" || trimmed == "/" {
                 continue;
             }
             if Self::is_directory_path(trimmed) {

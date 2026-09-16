@@ -126,12 +126,12 @@ fn append_browsing_options(content: &gtk::Box, manager: &Rc<ThemeManager>) {
 }
 
 fn append_search_exclusions_option(content: &gtk::Box, manager: &Rc<ThemeManager>) {
-    let manage = gtk::Button::with_label("Manage…");
+    let manage = gtk::Button::with_label("Manage");
     manage.set_valign(gtk::Align::Center);
     manage.add_css_class("form-control");
     manage.add_css_class("settings-choice");
     manage.set_tooltip_text(Some("Manage folders and directories excluded from search"));
-    super::super::accessibility::set_label(&manage, "Search exclusions");
+    super::super::accessibility::set_label(&manage, "Global search exclusions");
 
     let manager_for_click = manager.clone();
     manage.connect_clicked(move |button| {
@@ -139,11 +139,11 @@ fn append_search_exclusions_option(content: &gtk::Box, manager: &Rc<ThemeManager
     });
 
     let row = super::control_row(
-        "Search exclusions",
+        "Global search exclusions",
         "Folders and directories excluded from search.",
         &manage,
     );
-    super::search::tag(&row, "Search exclusions");
+    super::search::tag(&row, "Global search exclusions");
     content.append(&row);
 }
 

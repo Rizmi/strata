@@ -809,14 +809,7 @@ fn build_index(
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        let is_dir_excluded = if directory.depth == 0 {
-            exclusions
-                .directories
-                .iter()
-                .any(|dir| directory.path == *dir || directory.path.starts_with(dir))
-        } else {
-            exclusions.is_excluded(&directory.path, &dir_name, true)
-        };
+        let is_dir_excluded = exclusions.is_excluded(&directory.path, &dir_name, true);
         if is_dir_excluded {
             if !branch.is_empty() {
                 pending_branches.push_back(branch);

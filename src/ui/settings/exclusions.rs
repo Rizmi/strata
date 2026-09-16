@@ -33,7 +33,7 @@ pub(super) fn show_search_exclusions_dialog(
 
     let layout = modal_layout(
         icons::SEARCH,
-        "Search exclusions",
+        "Global search exclusions",
         "Folders and directories excluded from search",
         "Done",
     );
@@ -91,8 +91,15 @@ pub(super) fn show_search_exclusions_dialog(
     let on_remove: Rc<RefCell<Option<RemoveAction>>> = Rc::new(RefCell::new(None));
     let on_remove_cell = on_remove.clone();
     *on_remove.borrow_mut() = Some(Rc::new(move |item_to_remove: &str| {
+        let is_path = SearchExclusions::is_directory_path(item_to_remove);
         let mut current = manager_for_remove.search_exclusions();
-        current.retain(|candidate| !candidate.eq_ignore_ascii_case(item_to_remove));
+        current.retain(|candidate| {
+            if is_path {
+                candidate != item_to_remove
+            } else {
+                !candidate.eq_ignore_ascii_case(item_to_remove)
+            }
+        });
         manager_for_remove.set_search_exclusions(current);
         if let Some(ref cb) = *on_remove_cell.borrow() {
             render_exclusion_rows(&box_for_remove, &manager_for_remove, cb.clone());
@@ -110,37 +117,21 @@ pub(super) fn show_search_exclusions_dialog(
     let on_remove_for_add = on_remove.clone();
     let do_add = Rc::new(move || {
         let raw = field_for_add.text().to_string();
-        let trimmed = raw.trim().trim_end_matches(['/', '\\']).to_string();
-        if trimmed.is_empty() {
-            set_form_field_error(&field_for_add, &error_for_add, None);
-            return;
-        }
-        if trimmed == "~" || trimmed == "/" || trimmed == "\\" {
-            set_form_field_error(
-                &field_for_add,
-                &error_for_add,
-                Some("Cannot exclude root or entire home directory."),
-            );
-            return;
-        }
-        let mut current = manager_for_add.search_exclusions();
-        if current
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(&trimmed))
-        {
-            set_form_field_error(
-                &field_for_add,
-                &error_for_add,
-                Some("This exclusion has already been added."),
-            );
-            return;
-        }
-        set_form_field_error(&field_for_add, &error_for_add, None);
-        current.push(trimmed);
-        manager_for_add.set_search_exclusions(current);
-        field_for_add.set_text("");
-        if let Some(ref cb) = *on_remove_for_add.borrow() {
-            render_exclusion_rows(&box_for_add, &manager_for_add, cb.clone());
+        let current = manager_for_add.search_exclusions();
+        match validate_exclusion_input(&raw, &current) {
+            Ok(trimmed) => {
+                set_form_field_error(&field_for_add, &error_for_add, None);
+                let mut updated = current;
+                updated.push(trimmed);
+                manager_for_add.set_search_exclusions(updated);
+                field_for_add.set_text("");
+                if let Some(ref cb) = *on_remove_for_add.borrow() {
+                    render_exclusion_rows(&box_for_add, &manager_for_add, cb.clone());
+                }
+            }
+            Err(error) => {
+                set_form_field_error(&field_for_add, &error_for_add, error);
+            }
         }
     });
 
@@ -270,4 +261,36 @@ fn render_exclusion_rows(container: &gtk::Box, manager: &ThemeManager, on_remove
 
         container.append(&row);
     }
+}
+
+pub(super) fn validate_exclusion_input(
+    raw: &str,
+    current: &[String],
+) -> Result<String, Option<&'static str>> {
+    let input = raw.trim();
+    if input.is_empty() {
+        return Err(None);
+    }
+    if input == "/" || input == "~" {
+        return Err(Some("Cannot exclude root or entire home directory."));
+    }
+    let trimmed = input.trim_end_matches('/').to_string();
+    if trimmed.is_empty() || trimmed == "~" {
+        return Err(Some("Cannot exclude root or entire home directory."));
+    }
+    let is_path = SearchExclusions::is_directory_path(&trimmed);
+    if is_path && !trimmed.starts_with('/') && !trimmed.starts_with("~/") {
+        return Err(Some("Directory paths must start with / or ~/"));
+    }
+    let is_duplicate = current.iter().any(|existing| {
+        if is_path {
+            existing == &trimmed
+        } else {
+            existing.eq_ignore_ascii_case(&trimmed)
+        }
+    });
+    if is_duplicate {
+        return Err(Some("This exclusion has already been added."));
+    }
+    Ok(trimmed)
 }

@@ -56,7 +56,7 @@ const TARGETS: &[Target] = &[
     Target {
         id: "search-exclusions",
         page: "general",
-        title: "Search exclusions",
+        title: "Global search exclusions",
         aliases: "search filter exclusions exclude folders directories ignore venv prune",
     },
     Target {
