@@ -62,6 +62,23 @@ history/claim regressions; `app::browser::tests::metadata::` selects metadata-fi
 and sort-terminal regressions. Keep distinct input routes and lifecycle cases
 separate even when they share fixtures.
 
+Local-operation regressions have owners under `src/adapters/local_operations/tests/`
+for path resolution, copying, moving, replacement, conflicts, progress, naming,
+paste results, undo, deletion, and restore safety. Shared fixtures and the manual
+deletion benchmarks remain in the parent `tests.rs`; keep the benchmark names
+stable for `scripts/benchmark-delete.sh`. For example,
+`./scripts/test-headless.py adapters::local_operations::tests::replacement::`
+selects replacement safety cases. Preserve independently named filesystem races,
+symlink, non-UTF8, cancellation, and conflict scenarios when sharing setup.
+
+Window regressions have policy owners under `src/ui/window/tests/` for keyboard
+classification, sidebar places, bookmarks, devices, and trash. Startup and live
+preference cases stay in `preferences`; real key-routing scenarios stay in
+`keyboard_dispatch` and `type_to_search`. The `ui::window::` filter covers these
+owners and the adjacent window modules. When moving a GTK case, update its
+`gtk_test` subprocess name to match its compiled test path and verify that the
+child actually executes the case; an unchanged outer test count is not enough.
+
 A filter must collect at least one test; use Cargo's output or a collection
 check to verify that it did. `scripts/quality.sh` only accepts `all`, `fmt`,
 `clippy`, or `test` and does **not** forward test filters, so it cannot be used
