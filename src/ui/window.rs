@@ -994,10 +994,7 @@ pub(super) struct SidebarView {
 }
 
 impl SidebarView {
-    /// Defers device discovery until after the window paints its first frame, ensuring
-    /// file chooser dialogs present immediately. Handles pre-mapped windows directly,
-    /// falls back to idle scheduling if no frame clock is available (such as in headless
-    /// test harnesses), and uses a weak reference so closing the chooser safely aborts.
+    // Device discovery can block on D-Bus; let the chooser paint before starting it.
     pub(in crate::ui) fn schedule_after_first_paint(&self, window: &impl IsA<gtk::Widget>) {
         let weak_state = Rc::downgrade(&self.state);
         let armed = Rc::new(Cell::new(false));
