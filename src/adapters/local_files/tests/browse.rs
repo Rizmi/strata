@@ -80,6 +80,151 @@ fn ordinary_entries_do_not_redirect_to_target_uris() {
     }
 }
 
+fn recent_info(target: &str, recent_modified: i64) -> gio::FileInfo {
+    let info = gio::FileInfo::new();
+    info.set_name("recent-item");
+    info.set_display_name("Recent item");
+    info.set_file_type(gio::FileType::Regular);
+    info.set_size(999);
+    info.set_attribute_uint64(gio::FILE_ATTRIBUTE_TIME_MODIFIED, 999);
+    info.set_attribute_string(gio::FILE_ATTRIBUTE_STANDARD_TARGET_URI, target);
+    info.set_attribute_int64(gio::FILE_ATTRIBUTE_RECENT_MODIFIED, recent_modified);
+    info
+}
+
+fn target_info(name: &str, size: u64, modified: u64) -> gio::FileInfo {
+    let info = gio::FileInfo::new();
+    info.set_name(name);
+    info.set_display_name(name);
+    info.set_file_type(gio::FileType::Regular);
+    info.set_size(size as i64);
+    info.set_attribute_uint64(gio::FILE_ATTRIBUTE_TIME_MODIFIED, modified);
+    info
+}
+
+#[test]
+fn recent_entries_use_the_native_target_and_keep_recency_separate() {
+    let recent = recent_info("file:///fixture/target.txt", 42);
+    let target = recent_target_location(&recent).expect("the target URI should resolve");
+    let entry = recent_entry_from_target(
+        &recent,
+        "recent:///1".to_owned(),
+        target,
+        target_info("target.txt", 7, 123),
+    )
+    .expect("the target should produce an operational entry");
+
+    assert_eq!(entry.location, Location::local("/fixture/target.txt"));
+    assert_eq!(entry.display_name, "target.txt");
+    assert_eq!(entry.size, MetadataValue::Known(7));
+    assert_eq!(entry.modified_unix_seconds, MetadataValue::Known(123));
+    assert_eq!(entry.recent_unix_seconds, MetadataValue::Known(42));
+    assert_eq!(entry.recent_uri, Some("recent:///1".to_owned()));
+}
+
+#[test]
+fn recent_entries_keep_non_native_target_uris_clean() {
+    let recent = recent_info("smb://server/share/target.txt", 42);
+    let target = recent_target_location(&recent).expect("the target URI should resolve");
+    let entry = recent_entry_from_target(
+        &recent,
+        "recent:///2".to_owned(),
+        target,
+        target_info("target.txt", 7, 123),
+    )
+    .expect("the target should produce an operational entry");
+
+    assert_eq!(
+        entry.location,
+        Location::uri("smb://server/share/target.txt")
+    );
+    assert!(entry.location.native_path().is_none());
+}
+
+#[test]
+fn recent_virtual_targets_are_not_operational_entries() {
+    let recent = recent_info("recent:///virtual-item", 42);
+
+    assert_eq!(recent_target_location(&recent), None);
+}
+
+#[test]
+fn recent_target_redirects_that_return_to_recent_are_not_operational_entries() {
+    let recent = recent_info("file:///fixture/target-link", 42);
+    let target_location = recent_target_location(&recent).expect("the target URI should resolve");
+    let target_info = {
+        let target = target_info("target-link", 7, 123);
+        target.set_file_type(gio::FileType::Shortcut);
+        target.set_attribute_string(
+            gio::FILE_ATTRIBUTE_STANDARD_TARGET_URI,
+            "recent:///virtual-item",
+        );
+        target
+    };
+
+    assert!(
+        recent_entry_from_target(
+            &recent,
+            "recent:///3".to_owned(),
+            target_location,
+            target_info
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn unavailable_recent_targets_are_skipped() {
+    let recent = recent_info("file:///fixture/missing-recent-target", 42);
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let resolution = glib::MainContext::default().block_on(resolve_recent_entry(
+        recent,
+        "recent:///missing".to_owned(),
+        false,
+        Instant::now() + Duration::from_secs(10),
+    ));
+
+    assert!(matches!(resolution, RecentEntryResolution::Stale));
+}
+
+#[test]
+fn recent_symlink_targets_and_broken_links_are_distinguished() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir()?;
+    fs::create_dir(directory.path().join("directory"))?;
+    fs::write(directory.path().join("archive.zip"), b"fixture")?;
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    for (link, target, expected) in [
+        ("file-link.zip", "archive.zip", EntryKind::FileSymbolicLink),
+        (
+            "directory-link",
+            "directory",
+            EntryKind::DirectorySymbolicLink,
+        ),
+        ("broken-link.zip", "missing.zip", EntryKind::SymbolicLink),
+    ] {
+        let path = directory.path().join(link);
+        symlink(target, &path)?;
+        let recent = recent_info(&gio::File::for_path(&path).uri(), 42);
+        let resolution = glib::MainContext::default().block_on(resolve_recent_entry(
+            recent,
+            gio::File::for_path(&path).uri().to_string(),
+            false,
+            Instant::now() + Duration::from_secs(10),
+        ));
+        let RecentEntryResolution::Entry(entry) = resolution else {
+            panic!("{link} should resolve to an entry");
+        };
+        assert_eq!(entry.kind, expected, "{link}");
+    }
+    Ok(())
+}
+
 struct BrowseSource {
     entry: FileEntry,
     validation_error: Option<LocationValidationError>,
@@ -87,7 +232,7 @@ struct BrowseSource {
 
 impl FileSource for BrowseSource {
     fn validate_location(&self, location: &Location) -> Result<(), LocationValidationError> {
-        assert_eq!(location, &Location::uri("smb://server/Documents"));
+        assert_eq!(location, &self.entry.location);
         self.validation_error.clone().map_or(Ok(()), Err)
     }
 
@@ -111,7 +256,8 @@ impl FileSource for BrowseSource {
 #[test]
 fn browse_activation_navigates_or_requests_mounting_of_the_resolved_share() {
     let root = Location::uri("smb://server/");
-    let target = Location::uri("smb://server/Documents");
+    let target = location_for_file(&gio::File::for_uri("smb://server/Documents"))
+        .expect("the browse target should be a valid location");
     for file_type in [gio::FileType::Shortcut, gio::FileType::Mountable] {
         for validation_error in [
             None,

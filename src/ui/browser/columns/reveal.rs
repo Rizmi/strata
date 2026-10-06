@@ -2,13 +2,11 @@
 
 use super::*;
 
-pub(in crate::ui::browser) const COLUMN_PEEK_WIDTH: f64 = 48.0;
-
 #[derive(Clone, Copy, Debug)]
 pub(in crate::ui::browser) struct ColumnSpan {
     pub left: f64,
     pub right: f64,
-    pub total: f64,
+    pub trailing: f64,
 }
 
 impl ColumnSpan {
@@ -16,40 +14,14 @@ impl ColumnSpan {
         self.right - self.left
     }
 
-    pub fn peek_space(self, available: f64) -> f64 {
-        let neighbors = usize::from(self.left > 0.0) + usize::from(self.right < self.total);
-        ((available - self.width()).max(0.0) / COLUMN_PEEK_WIDTH)
-            .floor()
-            .min(neighbors as f64)
-            * COLUMN_PEEK_WIDTH
-    }
-
     pub fn reveal_target(self, current: f64, page_size: f64, lower: f64, upper: f64) -> f64 {
+        let maximum = (upper - page_size).max(lower);
         if self.left >= current && self.right <= current + page_size {
-            return current.clamp(lower, (upper - page_size).max(lower));
+            return current.clamp(lower, maximum);
         }
-        let budget = self.peek_space(page_size);
-        let left_first = self.left < current || self.right >= self.total;
-        let left = if self.left > lower && (left_first || budget >= COLUMN_PEEK_WIDTH * 2.0) {
-            budget.min(COLUMN_PEEK_WIDTH)
-        } else {
-            0.0
-        };
-        let right = if self.right < self.total {
-            (budget - left).min(COLUMN_PEEK_WIDTH)
-        } else {
-            0.0
-        };
-        let reveal_left = self.left - left;
-        let reveal_right = self.right + right;
-        let target = if reveal_right > current + page_size {
-            reveal_right - page_size
-        } else if reveal_left < current {
-            reveal_left
-        } else {
-            current
-        };
-        target.clamp(lower, (upper - page_size).max(lower))
+        (self.right + self.trailing - page_size)
+            .min(self.left)
+            .clamp(lower, maximum)
     }
 }
 
@@ -120,14 +92,19 @@ impl ViewState {
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let pending = Rc::new(RefCell::new(None));
         let peek_sequence = Rc::new(Cell::new(false));
+        let origin = Rc::new(Cell::new(None::<(f64, f64)>));
+        let origin_for_press = origin.clone();
+        let origin_for_release = origin.clone();
         let weak = Rc::downgrade(self);
         let pressed = pending.clone();
         let sequence = peek_sequence.clone();
         click.connect_pressed(move |gesture, count, x, y| {
             if count > 1 && sequence.get() {
+                origin_for_press.set(None);
                 gesture.set_state(gtk::EventSequenceState::Claimed);
                 return;
             }
+            origin_for_press.set(Some((x, y)));
             let target = weak.upgrade().and_then(|state| {
                 let target = state.clipped_column(x, y)?;
                 let surface = gesture.widget()?;
@@ -142,8 +119,17 @@ impl ViewState {
         });
         let weak = Rc::downgrade(self);
         let released = pending.clone();
-        click.connect_released(move |_, count, _, _| {
+        click.connect_released(move |gesture, count, x, y| {
+            let (Some((start_x, start_y)), Some(surface)) =
+                (origin_for_release.take(), gesture.widget())
+            else {
+                released.borrow_mut().take();
+                return;
+            };
             let target = released.borrow_mut().take();
+            if surface.drag_check_threshold(start_x as i32, start_y as i32, x as i32, y as i32) {
+                return;
+            }
             if count == 1
                 && let Some((depth, location)) = target
                 && let Some(state) = weak.upgrade()
@@ -151,7 +137,9 @@ impl ViewState {
                 state.reveal_column_only(depth, &location);
             }
         });
+        let origin_for_stop = origin;
         click.connect_stopped(move |_| {
+            origin_for_stop.set(None);
             pending.borrow_mut().take();
         });
         self.scroller.add_controller(click);

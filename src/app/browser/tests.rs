@@ -9,6 +9,7 @@ use std::{
 use super::*;
 
 mod archive_activation;
+mod background_operations;
 mod camera_photos;
 #[path = "deferred/tests.rs"]
 mod deferred;
@@ -23,7 +24,9 @@ mod navigation;
 mod operation_events;
 mod operations;
 mod preferences;
+mod recent;
 mod relocation;
+mod reveal;
 mod selection;
 #[path = "sorting/tests.rs"]
 mod staged_sort;
@@ -51,7 +54,7 @@ fn assert_invalid_creation_is_rejected(name: &str, create: impl FnOnce(&Rc<Brows
     assert!(browser.operation_load.borrow().is_none());
     assert!(matches!(
         events.borrow().as_slice(),
-        [BrowserEvent::OperationFailed { message }] if message == expected
+        [BrowserEvent::OperationFailed { message, .. }] if message == expected
     ));
 }
 
@@ -101,11 +104,13 @@ impl FileSource for WatchingFileSource {
                 kind: EntryKind::Directory,
                 size: MetadataValue::Unknown,
                 modified_unix_seconds: MetadataValue::Unknown,
+                recent_unix_seconds: MetadataValue::Unknown,
                 is_hidden: false,
                 mode: MetadataValue::Unknown,
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -182,11 +187,13 @@ impl FileSource for RetryFileSource {
                     kind: EntryKind::Directory,
                     size: MetadataValue::Unknown,
                     modified_unix_seconds: MetadataValue::Unknown,
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 }],
             });
             emit(DirectoryEvent::Finished {
@@ -244,11 +251,13 @@ impl FileSource for FilePreviewSource {
                 kind: EntryKind::File,
                 size: MetadataValue::Known(12),
                 modified_unix_seconds: MetadataValue::Known(1),
+                recent_unix_seconds: MetadataValue::Unknown,
                 is_hidden: false,
                 mode: MetadataValue::Unknown,
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -280,11 +289,13 @@ impl FileSource for ArchiveFileSource {
                     kind: EntryKind::File,
                     size: MetadataValue::Known(100),
                     modified_unix_seconds: MetadataValue::Known(1),
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/notes.txt"),
@@ -294,11 +305,13 @@ impl FileSource for ArchiveFileSource {
                     kind: EntryKind::File,
                     size: MetadataValue::Known(20),
                     modified_unix_seconds: MetadataValue::Known(1),
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::uri("sftp://example.com/remote-archive.zip"),
@@ -308,11 +321,29 @@ impl FileSource for ArchiveFileSource {
                     kind: EntryKind::File,
                     size: MetadataValue::Known(50),
                     modified_unix_seconds: MetadataValue::Known(1),
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
+                },
+                FileEntry {
+                    location: Location::local("/fixture/socket.zip"),
+                    native_name: OsString::from("socket.zip"),
+                    thumbnail_path: None,
+                    display_name: "socket.zip".into(),
+                    kind: EntryKind::Other,
+                    size: MetadataValue::Known(0),
+                    modified_unix_seconds: MetadataValue::Known(1),
+                    recent_unix_seconds: MetadataValue::Unknown,
+                    is_hidden: false,
+                    mode: MetadataValue::Unknown,
+                    image_dimensions: MetadataValue::Unknown,
+                    child_count: MetadataValue::Unknown,
+                    duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
             ],
         });
@@ -342,11 +373,13 @@ impl FileSource for OpenChildBesideFileSource {
                     kind: EntryKind::Directory,
                     size: MetadataValue::Unknown,
                     modified_unix_seconds: MetadataValue::Unknown,
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/example.conf"),
@@ -356,11 +389,13 @@ impl FileSource for OpenChildBesideFileSource {
                     kind: EntryKind::File,
                     size: MetadataValue::Known(12),
                     modified_unix_seconds: MetadataValue::Known(1),
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
             ]
         } else {
@@ -394,11 +429,13 @@ impl FileSource for RestoredSortingSource {
             kind: EntryKind::File,
             size: MetadataValue::Known(size),
             modified_unix_seconds: MetadataValue::Unknown,
+            recent_unix_seconds: MetadataValue::Unknown,
             is_hidden: false,
             mode: MetadataValue::Unknown,
             image_dimensions: MetadataValue::Unknown,
             child_count: MetadataValue::Unknown,
             duration_seconds: MetadataValue::Unknown,
+            recent_uri: None,
         };
         emit(DirectoryEvent::Batch {
             request_id: request.id,
@@ -430,11 +467,13 @@ impl FileSource for FakeFileSource {
                 kind: EntryKind::Directory,
                 size: MetadataValue::Unknown,
                 modified_unix_seconds: MetadataValue::Unknown,
+                recent_unix_seconds: MetadataValue::Unknown,
                 is_hidden: false,
                 mode: MetadataValue::Unknown,
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -465,11 +504,13 @@ impl FileSource for TrashFileSource {
                 kind: EntryKind::File,
                 size: MetadataValue::Unknown,
                 modified_unix_seconds: MetadataValue::Unknown,
+                recent_unix_seconds: MetadataValue::Unknown,
                 is_hidden: false,
                 mode: MetadataValue::Unknown,
                 image_dimensions: MetadataValue::Unknown,
                 child_count: MetadataValue::Unknown,
                 duration_seconds: MetadataValue::Unknown,
+                recent_uri: None,
             }],
         });
         emit(DirectoryEvent::Finished {
@@ -503,18 +544,46 @@ impl FileSource for CountingFileSource {
     }
 }
 
+type UndoMergeRecord = (
+    Vec<Location>,
+    Vec<Location>,
+    HashMap<Location, TrashedOriginal>,
+);
+
 thread_local! {
     static UNDO_MOVE_REQUESTS: RefCell<Vec<Vec<MoveRecord>>> = const { RefCell::new(Vec::new()) };
+    static UNDO_MOVE_CLEANUPS: RefCell<Vec<Vec<Location>>> = const { RefCell::new(Vec::new()) };
     static UNDO_COPY_REQUESTS: RefCell<Vec<Vec<Location>>> = const { RefCell::new(Vec::new()) };
+    static UNDO_MERGE_REQUESTS: RefCell<Vec<UndoMergeRecord>> =
+        const { RefCell::new(Vec::new()) };
+    static UNDO_RENAME_REQUESTS: RefCell<Vec<(Location, Location)>> = const { RefCell::new(Vec::new()) };
+    static FORWARD_RENAME_OUTCOME: Cell<Option<ForwardRenameOutcome>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+enum ForwardRenameOutcome {
+    Failed,
+    Cancelled,
 }
 
 struct ImmediateOperationProvider;
 
 impl OperationProvider for ImmediateOperationProvider {
     fn rename(&self, request: RenameRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
-        emit(OperationEvent::Renamed {
-            request_id: request.id,
-        });
+        match FORWARD_RENAME_OUTCOME.with(Cell::take) {
+            Some(ForwardRenameOutcome::Failed) => emit(OperationEvent::Failed {
+                request_id: request.id,
+                message: "rename failed".to_owned(),
+                password_failure: None,
+            }),
+            Some(ForwardRenameOutcome::Cancelled) => emit(OperationEvent::Cancelled {
+                request_id: request.id,
+                result: Default::default(),
+            }),
+            None => emit(OperationEvent::Renamed {
+                request_id: request.id,
+            }),
+        }
         LoadHandle::new(|| {})
     }
 
@@ -563,6 +632,9 @@ impl OperationProvider for ImmediateOperationProvider {
             emit(OperationEvent::TransferProgress {
                 request_id: request.id,
                 completed_items: index + 1,
+                completed_files: index + 1,
+                total_files: None,
+                current_file: None,
                 transferred_bytes: 0,
                 total_bytes: None,
                 created_location: (!request.move_sources)
@@ -578,6 +650,11 @@ impl OperationProvider for ImmediateOperationProvider {
     }
 
     fn undo_move(&self, request: UndoMoveRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
+        UNDO_MOVE_CLEANUPS.with(|requests| {
+            requests
+                .borrow_mut()
+                .push(request.cleanup_locations.clone())
+        });
         UNDO_MOVE_REQUESTS.with(|requests| {
             requests.borrow_mut().push(
                 request
@@ -598,11 +675,47 @@ impl OperationProvider for ImmediateOperationProvider {
         LoadHandle::new(|| {})
     }
 
+    fn undo_rename(
+        &self,
+        request: UndoRenameRequest,
+        emit: Rc<dyn Fn(OperationEvent)>,
+    ) -> LoadHandle {
+        UNDO_RENAME_REQUESTS.with(|requests| {
+            requests
+                .borrow_mut()
+                .push((request.current.clone(), request.original.clone()))
+        });
+        emit(OperationEvent::Renamed {
+            request_id: request.id,
+        });
+        LoadHandle::new(|| {})
+    }
+
     fn undo_copy(&self, request: UndoCopyRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
         UNDO_COPY_REQUESTS.with(|requests| requests.borrow_mut().push(request.locations.clone()));
         emit(OperationEvent::Deleted {
             request_id: request.id,
             locations: request.locations,
+        });
+        LoadHandle::new(|| {})
+    }
+
+    fn undo_merge(
+        &self,
+        request: UndoMergeRequest,
+        emit: Rc<dyn Fn(OperationEvent)>,
+    ) -> LoadHandle {
+        UNDO_MERGE_REQUESTS.with(|requests| {
+            requests.borrow_mut().push((
+                request.created.clone(),
+                request.overwritten.clone(),
+                request.originals.clone(),
+            ));
+        });
+        emit(OperationEvent::Restored {
+            request_id: request.id,
+            locations: Vec::new(),
+            restored: Vec::new(),
         });
         LoadHandle::new(|| {})
     }
@@ -620,17 +733,31 @@ impl OperationProvider for ImmediateOperationProvider {
     }
 
     fn restore(&self, request: RestoreRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
+        let restored = match &request.source {
+            RestoreSource::TrashEntries(items) => items
+                .iter()
+                .map(|item| Location::local(item.destination.clone()))
+                .collect(),
+            RestoreSource::OriginalLocations(locations) => locations.clone(),
+        };
         emit(OperationEvent::Restored {
             request_id: request.id,
             locations: Vec::new(),
+            restored,
         });
         LoadHandle::new(|| {})
     }
 
     fn compress(&self, request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
+        let archive = request
+            .destination
+            .child(std::ffi::OsStr::new(&request.archive_name))
+            .unwrap_or_else(|| request.destination.clone());
         emit(OperationEvent::Compressed {
             request_id: request.id,
             archive_name: request.archive_name,
+            archive,
+            original: None,
         });
         LoadHandle::new(|| {})
     }
@@ -681,8 +808,24 @@ impl OperationProvider for HeldExtractProvider {
         ImmediateOperationProvider.undo_move(request, emit)
     }
 
+    fn undo_rename(
+        &self,
+        request: UndoRenameRequest,
+        emit: Rc<dyn Fn(OperationEvent)>,
+    ) -> LoadHandle {
+        ImmediateOperationProvider.undo_rename(request, emit)
+    }
+
     fn undo_copy(&self, request: UndoCopyRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
         ImmediateOperationProvider.undo_copy(request, emit)
+    }
+
+    fn undo_merge(
+        &self,
+        request: UndoMergeRequest,
+        emit: Rc<dyn Fn(OperationEvent)>,
+    ) -> LoadHandle {
+        ImmediateOperationProvider.undo_merge(request, emit)
     }
 
     fn delete(&self, request: DeleteRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
@@ -716,11 +859,13 @@ fn fixture_entry(path: &str) -> FileEntry {
         kind: EntryKind::File,
         size: MetadataValue::Unknown,
         modified_unix_seconds: MetadataValue::Unknown,
+        recent_unix_seconds: MetadataValue::Unknown,
         is_hidden: false,
         mode: MetadataValue::Unknown,
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -760,10 +905,12 @@ fn batch_entry(name: &str) -> FileEntry {
         size: MetadataValue::Unknown,
         modified_unix_seconds: MetadataValue::Unknown,
         mode: MetadataValue::Unknown,
+        recent_unix_seconds: MetadataValue::Unknown,
         is_hidden: false,
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     }
 }
 
@@ -853,6 +1000,7 @@ enum FillAnswer {
 struct FillCall {
     id: RequestId,
     full: bool,
+    include_icon_details: bool,
     entries: Vec<Location>,
     emit: DirectoryEmit,
 }
@@ -910,10 +1058,12 @@ impl ScriptedSource {
             size: MetadataValue::Unknown,
             modified_unix_seconds: MetadataValue::Unknown,
             mode: MetadataValue::Unknown,
+            recent_unix_seconds: MetadataValue::Unknown,
             is_hidden: name.starts_with('.'),
             image_dimensions: MetadataValue::Unknown,
             child_count: MetadataValue::Unknown,
             duration_seconds: MetadataValue::Unknown,
+            recent_uri: None,
         }
     }
     fn answer(
@@ -1016,6 +1166,7 @@ impl FileSource for ScriptedSource {
                 self.fill_calls.borrow_mut().push(FillCall {
                     id,
                     full,
+                    include_icon_details: request.include_icon_details,
                     entries,
                     emit,
                 });
@@ -1024,6 +1175,7 @@ impl FileSource for ScriptedSource {
                 self.fill_calls.borrow_mut().push(FillCall {
                     id,
                     full,
+                    include_icon_details: request.include_icon_details,
                     entries,
                     emit: emit.clone(),
                 });
@@ -1126,11 +1278,13 @@ impl FileSource for MixedPeekFileSource {
                     kind: EntryKind::File,
                     size: MetadataValue::Unknown,
                     modified_unix_seconds: MetadataValue::Unknown,
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: true,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
                 FileEntry {
                     location: Location::local("/fixture/normal.txt"),
@@ -1140,11 +1294,13 @@ impl FileSource for MixedPeekFileSource {
                     kind: EntryKind::File,
                     size: MetadataValue::Unknown,
                     modified_unix_seconds: MetadataValue::Unknown,
+                    recent_unix_seconds: MetadataValue::Unknown,
                     is_hidden: false,
                     mode: MetadataValue::Unknown,
                     image_dimensions: MetadataValue::Unknown,
                     child_count: MetadataValue::Unknown,
                     duration_seconds: MetadataValue::Unknown,
+                    recent_uri: None,
                 },
             ],
         });

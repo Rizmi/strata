@@ -8,11 +8,14 @@ use std::{
 
 use gtk::{gio, glib, prelude::*};
 
-use crate::{adapters::location_for_file, model::Location};
+use crate::{
+    adapters::{location_for_file, reveal_target_for_file},
+    model::Location,
+};
 
 use super::{BrowserView, WeakBrowserView, present_target};
 
-const CONNECTING_DELAY: Duration = Duration::from_secs(1);
+pub(super) const CONNECTING_DELAY: Duration = Duration::from_secs(1);
 
 pub fn present_open(application: &gtk::Application, file: gio::File) {
     let Some(location) = location_for_file(&file) else {
@@ -163,19 +166,13 @@ async fn query_kind(
 }
 
 fn reveal_in_parent(browser: &BrowserView, file: &gio::File, location: Location) {
-    match file.parent().and_then(|parent| location_for_file(&parent)) {
-        Some(parent) => {
-            let name = file
-                .basename()
-                .map(|name| name.to_string_lossy().into_owned());
-            browser.select_after_load(name.into_iter().collect(), false);
-            browser.navigate_location(parent);
-        }
+    match reveal_target_for_file(file) {
+        Some((parent, target)) => browser.reveal_locations(parent, vec![target], false),
         None => browser.navigate_location(location),
     }
 }
 
-fn status_widget(overlay: &gtk::Overlay) -> Option<gtk::Widget> {
+pub(super) fn status_widget(overlay: &gtk::Overlay) -> Option<gtk::Widget> {
     let mut child = overlay.first_child();
     while let Some(widget) = child {
         if widget.has_css_class("open-argument-status") {
@@ -186,7 +183,7 @@ fn status_widget(overlay: &gtk::Overlay) -> Option<gtk::Widget> {
     None
 }
 
-fn clear_status(browser: &BrowserView) {
+pub(super) fn clear_status(browser: &BrowserView) {
     let overlay = browser.overlay();
     if let Some(widget) = status_widget(&overlay) {
         overlay.remove_overlay(&widget);
@@ -204,6 +201,30 @@ fn connecting_status_container() -> (gtk::Box, gtk::Box) {
     (row, content)
 }
 
+pub(super) fn show_connecting_overlay(
+    browser: &BrowserView,
+    message: &str,
+    on_cancel: impl Fn() + 'static,
+) {
+    clear_status(browser);
+    let overlay = browser.overlay();
+    let (row, content) = connecting_status_container();
+
+    let spinner = gtk::Spinner::new();
+    spinner.start();
+    content.append(&spinner);
+
+    let label = gtk::Label::new(Some(message));
+    label.add_css_class("form-message");
+    content.append(&label);
+
+    let cancel = gtk::Button::with_label("Cancel");
+    content.append(&cancel);
+    cancel.connect_clicked(move |_| on_cancel());
+
+    overlay.add_overlay(&row);
+}
+
 /// Cancellation disowns late results because a native query may remain blocked in the kernel.
 fn show_connecting(weak: WeakBrowserView, generation: u64, request: Rc<OpenRequest>) {
     let Some(browser) = weak.upgrade() else {
@@ -212,22 +233,8 @@ fn show_connecting(weak: WeakBrowserView, generation: u64, request: Rc<OpenReque
     if browser.browser().navigation_generation() != generation {
         return;
     }
-    clear_status(&browser);
-    let overlay = browser.overlay();
-    let (row, content) = connecting_status_container();
-
-    let spinner = gtk::Spinner::new();
-    spinner.start();
-    content.append(&spinner);
-
-    let label = gtk::Label::new(Some("Connecting to location…"));
-    label.add_css_class("form-message");
-    content.append(&label);
-
-    let cancel = gtk::Button::with_label("Cancel");
-    content.append(&cancel);
     let cancel_browser = browser.downgrade();
-    cancel.connect_clicked(move |_| {
+    show_connecting_overlay(&browser, "Connecting to location…", move || {
         request.abort();
         if let Some(browser) = cancel_browser.upgrade() {
             browser.browser().bump_navigation_generation();
@@ -236,8 +243,6 @@ fn show_connecting(weak: WeakBrowserView, generation: u64, request: Rc<OpenReque
             browser.navigate_location(Location::local(super::home_directory()));
         }
     });
-
-    overlay.add_overlay(&row);
 }
 
 fn show_error(browser: &BrowserView, file: gio::File, location: Location) {

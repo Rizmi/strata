@@ -10,7 +10,7 @@ use crate::{
     ui::{
         controls::{form_entry, form_error_label, form_label, modal_layout, set_form_field_error},
         modal::{ModalHost, dismiss_modal_layer, modal_layer},
-        theme::ThemeManager,
+        preferences::PreferenceManager,
     },
 };
 
@@ -21,7 +21,7 @@ type RemoveAction = Rc<dyn Fn(&str)>;
 
 pub(super) fn show_search_exclusions_dialog(
     parent: &impl IsA<gtk::Widget>,
-    manager: &Rc<ThemeManager>,
+    manager: &Rc<PreferenceManager>,
 ) {
     let Some(ModalHost {
         overlay: window_overlay,
@@ -215,7 +215,7 @@ pub(super) fn show_search_exclusions_dialog(
     field.grab_focus();
 }
 
-fn render_exclusion_rows(container: &gtk::Box, manager: &ThemeManager, on_remove: RemoveAction) {
+fn render_exclusion_rows(container: &gtk::Box, manager: &PreferenceManager, on_remove: RemoveAction) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
     }

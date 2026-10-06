@@ -26,8 +26,8 @@ fn search_exclusions_persist_and_update_behavior() {
     gtk_test(
         "ui::settings::exclusions::tests::search_exclusions_persist_and_update_behavior",
         || {
-            ThemeManager::seed_saved_preferences_for_test();
-            let manager = ThemeManager::shared();
+            PreferenceManager::seed_saved_preferences_for_test();
+            let manager = PreferenceManager::shared();
             manager.set_search_exclusions(vec![".venv".to_owned(), "~/Secret".to_owned()]);
             assert_eq!(
                 manager.search_exclusions(),

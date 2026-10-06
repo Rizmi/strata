@@ -7,69 +7,27 @@ use std::{
     error::Error,
     ffi::OsString,
     fs,
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
         fs::PermissionsExt,
     },
     process::Command,
-    sync::{Arc, Mutex, MutexGuard},
     time::{Instant, SystemTime},
 };
-
-use tracing_subscriber::fmt::MakeWriter;
 
 use super::*;
 use crate::{
     model::{Location, MetadataValue},
-    test_support::ASYNC_MAIN_CONTEXT_DEFAULT,
+    test_support::{ASYNC_MAIN_CONTEXT_DEFAULT, capture_logs},
 };
 
-#[derive(Clone, Default)]
-struct LogWriter(Arc<Mutex<Vec<u8>>>);
-
-struct LogWriterGuard<'a>(MutexGuard<'a, Vec<u8>>);
-
-impl Write for LogWriterGuard<'_> {
-    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
-        self.0.write(buffer)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
-    }
-}
-
-impl<'a> MakeWriter<'a> for LogWriter {
-    type Writer = LogWriterGuard<'a>;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        LogWriterGuard(self.0.lock().unwrap_or_else(|error| error.into_inner()))
-    }
-}
-
-impl LogWriter {
-    fn output(&self) -> String {
-        let output = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        String::from_utf8_lossy(&output).into_owned()
-    }
-}
-
 fn capture_directory_start_logs(locations: &[(RequestId, &Location)]) -> String {
-    let writer = LogWriter::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_max_level(tracing::Level::DEBUG)
-        .with_writer(writer.clone())
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("the logging subscriber should only be installed once");
-    for (request_id, location) in locations {
-        log_directory_load_started(*request_id, location);
-    }
-    writer.output()
+    capture_logs(|| {
+        for (request_id, location) in locations {
+            log_directory_load_started(*request_id, location);
+        }
+    })
 }
 
 fn captured_event<'a>(output: &'a str, request_id: RequestId, message: &str) -> &'a str {
@@ -115,6 +73,31 @@ fn directory_logging_respects_default_and_diagnostic_privacy() {
         "private-fragment",
     ] {
         assert!(!remote_diagnostic.contains(secret));
+    }
+}
+
+#[test]
+fn remote_backend_failures_hide_uri_user_info_in_views_and_diagnostic_logs() {
+    let location = Location::uri("sftp://alice@host.example/private");
+    let error = glib::Error::new(
+        gio::IOErrorEnum::Failed,
+        "Unable to read sftp://alice:secret@host.example/private?token=hidden#fragment",
+    );
+    let validation = uri_validation_result(&location, Err(error.clone()));
+    let Err(LocationValidationError::Unavailable(validation_message)) = validation else {
+        panic!("remote validation should report a sanitized failure");
+    };
+    let DirectoryEvent::Failed { message, .. } = remote_directory_failure(RequestId(42), &error)
+    else {
+        panic!("remote enumeration should report a sanitized failure");
+    };
+    let diagnostic = capture_logs(|| log_monitor_metadata_error(&location, &error));
+
+    for text in [&validation_message, &message, &diagnostic] {
+        assert!(text.contains("sftp://host.example/private"), "{text}");
+        for secret in ["alice", "secret", "token", "hidden", "fragment"] {
+            assert!(!text.contains(secret), "{text}");
+        }
     }
 }
 
@@ -249,6 +232,72 @@ fn coalescing_preserves_a_move_when_metadata_follows_it() {
     );
 
     assert!(matches!(change, PendingMonitorChange::Move { .. }));
+}
+
+#[test]
+fn hidden_monitor_changes_are_skipped_but_atomic_publication_stays_visible() {
+    let hidden = Location::local("/fixture/.strata-replacement-123");
+    let visible = Location::local("/fixture/report.pdf");
+
+    assert!(visible_monitor_change(PendingMonitorChange::Upsert(hidden.clone()), false,).is_none());
+    assert!(matches!(
+        visible_monitor_change(
+            PendingMonitorChange::Move {
+                from: hidden,
+                to: visible.clone(),
+            },
+            false,
+        ),
+        Some(PendingMonitorChange::Upsert(location)) if location == visible
+    ));
+    assert!(
+        visible_monitor_change(
+            PendingMonitorChange::Upsert(Location::local("/fixture/.env")),
+            true,
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn recent_monitor_events_rescan_without_querying_virtual_children() {
+    let watched = Location::uri("recent:///");
+    let child = Location::uri("recent:///virtual-child");
+    let events = [
+        gio::FileMonitorEvent::Created,
+        gio::FileMonitorEvent::Changed,
+        gio::FileMonitorEvent::Deleted,
+        gio::FileMonitorEvent::Moved,
+        gio::FileMonitorEvent::Renamed,
+        gio::FileMonitorEvent::AttributeChanged,
+        gio::FileMonitorEvent::ChangesDoneHint,
+        gio::FileMonitorEvent::PreUnmount,
+        gio::FileMonitorEvent::Unmounted,
+    ];
+
+    let mut pending = HashMap::new();
+    for (index, event) in events.into_iter().enumerate() {
+        let change = pending_monitor_change(
+            &watched,
+            Some(child.clone()),
+            Some(Location::uri(format!("recent:///other-{index}"))),
+            event,
+        )
+        .expect("Recent monitor activity should invalidate the collection");
+        assert!(matches!(change, PendingMonitorChange::Rescan));
+        assert_eq!(queue_monitor_change(&mut pending, None, change), index == 0);
+    }
+
+    let notified: Rc<RefCell<Vec<DirectoryChange>>> = Rc::new(RefCell::new(Vec::new()));
+    let collected = notified.clone();
+    let notify: Rc<dyn Fn(DirectoryChange)> =
+        Rc::new(move |change| collected.borrow_mut().push(change));
+    flush_monitor_changes(&RefCell::new(pending), &notify, &Rc::new(Cell::new(false)));
+
+    assert!(matches!(
+        notified.borrow().as_slice(),
+        [DirectoryChange::Rescan]
+    ));
 }
 
 #[test]
@@ -403,6 +452,61 @@ fn a_directory_reporting_changes_against_itself_is_not_its_own_child() {
 }
 
 #[test]
+fn sustained_native_monitor_bursts_flush_without_rescanning() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let directory = unique_fixture_root("monitor-burst");
+    fs::create_dir_all(&directory).expect("the fixture directory should be created");
+    let changes: Rc<RefCell<Vec<DirectoryChange>>> = Rc::new(RefCell::new(Vec::new()));
+    let collected = changes.clone();
+    let handle = LocalFileSource
+        .watch(
+            Location::local(&directory),
+            false,
+            Rc::new(move |change| collected.borrow_mut().push(change)),
+        )
+        .expect("the native location should be monitored");
+
+    for index in 0..1_000 {
+        fs::write(
+            directory.join(format!("file-{index:04}.txt")),
+            b"real contents",
+        )
+        .expect("the fixture file should be written");
+    }
+
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        while context.iteration(false) {}
+        let observed = changes.borrow();
+        assert!(
+            observed
+                .iter()
+                .all(|change| !matches!(change, DirectoryChange::Rescan)),
+            "a bounded native burst should stay incremental"
+        );
+        if observed
+            .iter()
+            .filter(|change| matches!(change, DirectoryChange::Upsert(_)))
+            .count()
+            == 1_000
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "all monitored entries should arrive"
+        );
+        drop(observed);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(handle);
+    fs::remove_dir_all(&directory).expect("the fixture directory should be removed");
+}
+
+#[test]
 fn watching_a_uri_location_reports_created_entries() {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
@@ -451,6 +555,73 @@ fn unique_fixture_root(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("strata-local-files-{label}-{unique}"))
 }
 
+struct RecentFixtureSource {
+    entries: RefCell<VecDeque<RecentEntryResolution>>,
+    requests: Rc<RefCell<Vec<usize>>>,
+    pending_after_first_batch: bool,
+}
+
+impl RecentFixtureSource {
+    fn new(
+        entries: Vec<RecentEntryResolution>,
+        pending_after_first_batch: bool,
+    ) -> (Self, Rc<RefCell<Vec<usize>>>) {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        (
+            Self {
+                entries: RefCell::new(entries.into_iter().collect()),
+                requests: requests.clone(),
+                pending_after_first_batch,
+            },
+            requests,
+        )
+    }
+}
+
+impl RecentEnumerationSource for RecentFixtureSource {
+    fn open(&self, _deadline: Instant) -> RecentEnumerationFuture<Result<(), RecentSourceError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn next_batch(
+        &self,
+        batch_size: usize,
+        _include_metadata: bool,
+        deadline: Instant,
+    ) -> RecentEnumerationFuture<Result<Option<Vec<RecentEntryResolution>>, RecentSourceError>>
+    {
+        let request_number = {
+            let mut requests = self.requests.borrow_mut();
+            requests.push(batch_size);
+            requests.len()
+        };
+        if Instant::now() >= deadline {
+            return Box::pin(async { Err(RecentSourceError::TimedOut) });
+        }
+        if self.pending_after_first_batch && request_number > 1 {
+            return Box::pin(std::future::pending());
+        }
+        let entries = {
+            let mut remaining = self.entries.borrow_mut();
+            (0..batch_size)
+                .filter_map(|_| remaining.pop_front())
+                .collect::<Vec<_>>()
+        };
+        let batch = (!entries.is_empty()).then_some(entries);
+        Box::pin(async move { Ok(batch) })
+    }
+}
+
+fn recent_fixture_entry(name: &str) -> FileEntry {
+    let info = gio::FileInfo::new();
+    info.set_name(name);
+    info.set_display_name(name);
+    info.set_file_type(gio::FileType::Regular);
+    let mut entry = entry_from_info(Location::local(format!("/fixture/{name}")), info);
+    entry.recent_unix_seconds = MetadataValue::Known(42);
+    entry
+}
+
 /// `enumerate()` spawns its work on `glib::MainContext::default()` internally (not whatever
 /// context happens to be thread-default), so it can only be driven via that same shared context
 /// -- a private context pushed as thread-default would never see the spawned task at all. Bridge
@@ -459,6 +630,17 @@ fn unique_fixture_root(label: &str) -> std::path::PathBuf {
 /// threads panic with a GLib thread-affinity error, same as concurrent `spawn_local`/`iteration()`
 /// would.
 fn run_enumerate(request: DirectoryRequest) -> Vec<DirectoryEvent> {
+    run_events(|emit| LocalFileSource.enumerate(request, emit))
+}
+
+fn run_recent_enumerate(
+    request: DirectoryRequest,
+    source: Box<dyn RecentEnumerationSource>,
+) -> Vec<DirectoryEvent> {
+    run_events(|emit| enumerate_recent_with_source(request, emit, Instant::now(), source))
+}
+
+fn run_events(start: impl FnOnce(Rc<dyn Fn(DirectoryEvent)>) -> LoadHandle) -> Vec<DirectoryEvent> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
         .expect("the async test lock should not be poisoned");
@@ -477,7 +659,7 @@ fn run_enumerate(request: DirectoryRequest) -> Vec<DirectoryEvent> {
                 waker.wake();
             }
         });
-        let handle = LocalFileSource.enumerate(request, emit);
+        let handle = start(emit);
         std::future::poll_fn(|cx| {
             let has_terminal_event = events.borrow().iter().any(|event| {
                 matches!(
@@ -538,6 +720,289 @@ fn finished_can_delete(events: &[DirectoryEvent]) -> Option<Option<bool>> {
         DirectoryEvent::Finished { can_delete, .. } => Some(*can_delete),
         _ => None,
     })
+}
+
+fn recent_resolution(name: &str) -> RecentEntryResolution {
+    RecentEntryResolution::Entry(Box::new(recent_fixture_entry(name)))
+}
+
+#[test]
+fn recent_enumeration_publishes_valid_targets_and_skips_stale_entries() {
+    let (source, requests) = RecentFixtureSource::new(
+        vec![
+            recent_resolution("valid-one"),
+            RecentEntryResolution::Stale,
+            recent_resolution("valid-two"),
+        ],
+        false,
+    );
+    let events = run_recent_enumerate(
+        DirectoryRequest {
+            id: RequestId(1),
+            location: Location::uri("recent:///"),
+            batch_size: 2,
+            include_metadata: true,
+            max_entries: 10,
+            time_budget: Duration::from_secs(10),
+        },
+        Box::new(source),
+    );
+
+    assert_eq!(
+        batched_entries(&events)
+            .iter()
+            .map(|entry| entry.native_name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        ["valid-one", "valid-two"]
+    );
+    assert_eq!(finished_truncated(&events), Some(false));
+    assert_eq!(finished_can_trash(&events), Some(None));
+    assert_eq!(finished_can_delete(&events), Some(None));
+    assert_eq!(&*requests.borrow(), &[2, 2, 2]);
+}
+
+#[test]
+fn recent_enumeration_finishes_normally_when_empty() {
+    let (source, _) = RecentFixtureSource::new(Vec::new(), false);
+    let events = run_recent_enumerate(
+        DirectoryRequest {
+            id: RequestId(1),
+            location: Location::uri("recent:///"),
+            batch_size: 2,
+            include_metadata: false,
+            max_entries: 10,
+            time_budget: Duration::from_secs(10),
+        },
+        Box::new(source),
+    );
+
+    assert!(batched_entries(&events).is_empty());
+    assert_eq!(finished_truncated(&events), Some(false));
+    assert_eq!(finished_can_trash(&events), Some(None));
+    assert_eq!(finished_can_delete(&events), Some(None));
+}
+
+#[test]
+fn recent_enumeration_respects_the_request_batch_size() {
+    let (source, requests) = RecentFixtureSource::new(
+        (0..5)
+            .map(|index| recent_resolution(&format!("entry-{index}")))
+            .collect(),
+        false,
+    );
+    let events = run_recent_enumerate(
+        DirectoryRequest {
+            id: RequestId(1),
+            location: Location::uri("recent:///"),
+            batch_size: 2,
+            include_metadata: false,
+            max_entries: 10,
+            time_budget: Duration::from_secs(10),
+        },
+        Box::new(source),
+    );
+
+    let batch_sizes = events
+        .iter()
+        .filter_map(|event| match event {
+            DirectoryEvent::Batch { entries, .. } => Some(entries.len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(batch_sizes, [2, 2, 1]);
+    assert!(requests.borrow().iter().all(|size| *size == 2));
+}
+
+#[test]
+fn recent_enumeration_respects_max_entries_and_reports_truncation() {
+    let (source, _) = RecentFixtureSource::new(
+        (0..5)
+            .map(|index| recent_resolution(&format!("entry-{index}")))
+            .collect(),
+        false,
+    );
+    let events = run_recent_enumerate(
+        DirectoryRequest {
+            id: RequestId(1),
+            location: Location::uri("recent:///"),
+            batch_size: 2,
+            include_metadata: false,
+            max_entries: 3,
+            time_budget: Duration::from_secs(10),
+        },
+        Box::new(source),
+    );
+
+    assert_eq!(batched_entry_count(&events), 3);
+    assert_eq!(finished_truncated(&events), Some(true));
+}
+
+struct FailingRecentSource {
+    fail_on_open: bool,
+}
+
+impl RecentEnumerationSource for FailingRecentSource {
+    fn open(&self, _deadline: Instant) -> RecentEnumerationFuture<Result<(), RecentSourceError>> {
+        let fail = self.fail_on_open;
+        Box::pin(async move {
+            if fail {
+                Err(RecentSourceError::Failed(
+                    "recent backend is gone".to_owned(),
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn next_batch(
+        &self,
+        _batch_size: usize,
+        _include_metadata: bool,
+        _deadline: Instant,
+    ) -> RecentEnumerationFuture<Result<Option<Vec<RecentEntryResolution>>, RecentSourceError>>
+    {
+        Box::pin(async { Err(RecentSourceError::Failed("recent read failed".to_owned())) })
+    }
+}
+
+fn recent_failure_message(events: &[DirectoryEvent]) -> Option<&str> {
+    events.iter().find_map(|event| match event {
+        DirectoryEvent::Failed { message, .. } => Some(message.as_str()),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_failing_recent_open_reports_the_backend_error_instead_of_an_empty_collection() {
+    let events = run_recent_enumerate(
+        recent_request(),
+        Box::new(FailingRecentSource { fail_on_open: true }),
+    );
+
+    assert_eq!(
+        recent_failure_message(&events),
+        Some("recent backend is gone")
+    );
+    assert_eq!(finished_truncated(&events), None);
+    assert!(batched_entries(&events).is_empty());
+}
+
+#[test]
+fn a_failing_recent_read_reports_the_backend_error_instead_of_finishing_cleanly() {
+    let events = run_recent_enumerate(
+        recent_request(),
+        Box::new(FailingRecentSource {
+            fail_on_open: false,
+        }),
+    );
+
+    assert_eq!(recent_failure_message(&events), Some("recent read failed"));
+    assert_eq!(finished_truncated(&events), None);
+}
+
+#[test]
+fn an_unresolvable_target_does_not_discard_the_entries_beside_it() {
+    let (source, _) = RecentFixtureSource::new(
+        vec![
+            recent_resolution("before"),
+            RecentEntryResolution::TimedOut,
+            recent_resolution("after"),
+        ],
+        false,
+    );
+
+    let events = run_recent_enumerate(
+        DirectoryRequest {
+            batch_size: 3,
+            ..recent_request()
+        },
+        Box::new(source),
+    );
+
+    assert_eq!(
+        batched_entries(&events)
+            .iter()
+            .map(|entry| entry.display_name.clone())
+            .collect::<Vec<_>>(),
+        ["before", "after"]
+    );
+    assert_eq!(finished_truncated(&events), Some(true));
+}
+
+fn recent_request() -> DirectoryRequest {
+    DirectoryRequest {
+        id: RequestId(1),
+        location: Location::uri("recent:///"),
+        batch_size: 2,
+        include_metadata: false,
+        max_entries: 10,
+        time_budget: Duration::from_secs(5),
+    }
+}
+
+#[test]
+fn recent_enumeration_honors_a_zero_time_budget() {
+    let events = run_enumerate(DirectoryRequest {
+        id: RequestId(1),
+        location: Location::uri("recent:///"),
+        batch_size: 2,
+        include_metadata: false,
+        max_entries: 10,
+        time_budget: Duration::ZERO,
+    });
+
+    assert!(batched_entries(&events).is_empty());
+    assert_eq!(finished_truncated(&events), Some(true));
+    assert_eq!(finished_can_trash(&events), Some(None));
+    assert_eq!(finished_can_delete(&events), Some(None));
+}
+
+#[test]
+fn cancelling_recent_enumeration_stops_further_publication() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let (source, _) = RecentFixtureSource::new(vec![recent_resolution("first")], true);
+    let events: Rc<RefCell<Vec<DirectoryEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let collected = events.clone();
+    let handle = enumerate_recent_with_source(
+        DirectoryRequest {
+            id: RequestId(1),
+            location: Location::uri("recent:///"),
+            batch_size: 1,
+            include_metadata: false,
+            max_entries: 10,
+            time_budget: Duration::from_secs(10),
+        },
+        Rc::new(move |event| collected.borrow_mut().push(event)),
+        Instant::now(),
+        Box::new(source),
+    );
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !events
+        .borrow()
+        .iter()
+        .any(|event| matches!(event, DirectoryEvent::Batch { .. }))
+        && Instant::now() < deadline
+    {
+        context.iteration(true);
+    }
+
+    assert_eq!(batched_entry_count(&events.borrow()), 1);
+    drop(handle);
+    for _ in 0..3 {
+        while context.iteration(false) {}
+    }
+
+    assert_eq!(batched_entry_count(&events.borrow()), 1);
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, DirectoryEvent::Finished { .. }))
+    );
 }
 
 #[test]
@@ -1135,7 +1600,7 @@ fn fill_image_file_extracts_dimensions() -> Result<(), Box<dyn Error>> {
         time_budget: Duration::from_secs(10),
     });
     assert_eq!(fill_outcome(&events), Some(MetadataOutcome::Complete));
-    let dimensions = events.iter().find_map(|event| match event {
+    let dimensions = events.iter().rev().find_map(|event| match event {
         DirectoryEvent::MetadataFilled { updates, .. } => updates
             .first()
             .map(|update| update.image_dimensions.clone()),
@@ -1178,7 +1643,7 @@ fn fill_media_file_caches_duration_for_revisits() -> Result<(), Box<dyn Error>> 
         time_budget: Duration::from_secs(10),
     });
     assert_eq!(fill_outcome(&events), Some(MetadataOutcome::Complete));
-    let duration = events.iter().find_map(|event| match event {
+    let duration = events.iter().rev().find_map(|event| match event {
         DirectoryEvent::MetadataFilled { updates, .. } => updates
             .first()
             .map(|update| update.duration_seconds.clone()),
@@ -1209,7 +1674,7 @@ fn fill_media_file_caches_duration_for_revisits() -> Result<(), Box<dyn Error>> 
         time_budget: Duration::from_secs(10),
     });
     assert_eq!(fill_outcome(&revisit), Some(MetadataOutcome::Complete));
-    let revisited_duration = revisit.iter().find_map(|event| match event {
+    let revisited_duration = revisit.iter().rev().find_map(|event| match event {
         DirectoryEvent::MetadataFilled { updates, .. } => updates
             .first()
             .map(|update| update.duration_seconds.clone()),
@@ -1244,7 +1709,7 @@ fn fill_media_file_caches_duration_for_revisits() -> Result<(), Box<dyn Error>> 
         include_icon_details: true,
         time_budget: Duration::from_secs(10),
     });
-    let changed_duration = changed.iter().find_map(|event| match event {
+    let changed_duration = changed.iter().rev().find_map(|event| match event {
         DirectoryEvent::MetadataFilled { updates, .. } => updates
             .first()
             .map(|update| update.duration_seconds.clone()),
@@ -1272,7 +1737,7 @@ fn fill_directory_child_count_extracts_item_count() -> Result<(), Box<dyn Error>
         time_budget: Duration::from_secs(10),
     });
     assert_eq!(fill_outcome(&events), Some(MetadataOutcome::Complete));
-    let child_count = events.iter().find_map(|event| match event {
+    let child_count = events.iter().rev().find_map(|event| match event {
         DirectoryEvent::MetadataFilled { updates, .. } => {
             updates.first().map(|update| update.child_count.clone())
         }
@@ -1402,4 +1867,282 @@ fn parallel_fill_cancellation_reports_cancelled_without_chunks() {
         .await;
         ticker.remove();
     });
+}
+
+#[test]
+fn cheap_metadata_is_published_while_details_are_waiting() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("main-context lock");
+    let root = tempfile::tempdir().expect("fixture directory");
+    let path = root.path().join("photo.jpg");
+    fs::write(&path, b"content").expect("first fixture");
+    let second = root.path().join("second.jpg");
+    fs::write(&second, b"content").expect("second fixture");
+    let (release, wait) = std::sync::mpsc::channel();
+    let wait = Mutex::new(wait);
+    glib::MainContext::default().block_on(async move {
+        let (finished, done) = futures_channel::oneshot::channel();
+        let finished = RefCell::new(Some(finished));
+        let saw_cheap = Rc::new(Cell::new(0));
+        let saw_details = Rc::new(Cell::new(0));
+        let cheap = saw_cheap.clone();
+        let details = saw_details.clone();
+        let emit = Rc::new(move |event| match event {
+            DirectoryEvent::MetadataFilled { updates, .. } => {
+                for update in updates {
+                    assert_eq!(update.size, MetadataValue::Known(7));
+                    assert!(matches!(
+                        update.modified_unix_seconds,
+                        MetadataValue::Known(_)
+                    ));
+                    assert!(matches!(update.mode, MetadataValue::Known(_)));
+                    if update.image_dimensions == MetadataValue::Unknown {
+                        cheap.set(cheap.get() + 1);
+                        if cheap.get() == 2 {
+                            release.send(()).expect("release first probe");
+                        }
+                    } else {
+                        assert_eq!(cheap.get(), 2);
+                        assert_eq!(update.image_dimensions, MetadataValue::Known((20, 30)));
+                        details.set(details.get() + 1);
+                        if details.get() == 1 {
+                            release.send(()).expect("release second probe");
+                        }
+                    }
+                }
+            }
+            DirectoryEvent::MetadataFinished { outcome, .. } => {
+                assert_eq!(outcome, MetadataOutcome::Complete);
+                finished
+                    .borrow_mut()
+                    .take()
+                    .expect("one completion")
+                    .send(())
+                    .expect("completion receiver");
+            }
+            _ => {}
+        });
+        let handle = fill_parallel_with_details(
+            1,
+            RequestId(1),
+            vec![Location::local(path), Location::local(second)],
+            true,
+            Duration::from_secs(10),
+            emit,
+            move |update, _, _, _, _| {
+                wait.lock()
+                    .expect("probe receiver")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("preceding metadata published before probe finishes");
+                update.image_dimensions = MetadataValue::Known((20, 30));
+                true
+            },
+        );
+        done.await.expect("metadata completion");
+        assert_eq!(saw_cheap.get(), 2);
+        assert_eq!(saw_details.get(), 2);
+        drop(handle);
+    });
+}
+
+#[test]
+fn cancelled_media_details_are_not_cached_as_unavailable() {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let path = root.path().join("photo.jpg");
+    fs::write(&path, b"content").expect("fixture file");
+    let location = Location::local(&path);
+    let info = gio::File::for_path(&path)
+        .query_info(
+            METADATA_ATTRIBUTES,
+            gio::FileQueryInfoFlags::NONE,
+            None::<&gio::Cancellable>,
+        )
+        .expect("source metadata");
+    let cancellable = gio::Cancellable::new();
+    let (mut update, _) = update_from_info(&info, &location);
+    assert!(!fill_icon_details_with_probe(
+        &mut update,
+        &info,
+        &location,
+        &cancellable,
+        Instant::now() + Duration::from_secs(10),
+        |_, _, cancellation| {
+            cancellation.cancel();
+            Err("cancelled".to_owned())
+        },
+    ));
+    assert_eq!(update.image_dimensions, MetadataValue::Unknown);
+    assert_eq!(update.duration_seconds, MetadataValue::Unknown);
+    assert!(cached_icon_details_for_revisit(&path).is_none());
+}
+
+#[derive(Clone, Default)]
+struct FakeRemovalBackend {
+    calls: Rc<RefCell<Vec<String>>>,
+    outcomes: Rc<RefCell<HashMap<String, Result<(), String>>>>,
+    hold: Rc<Cell<bool>>,
+}
+
+impl FakeRemovalBackend {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn fail(&self, uri: &str, error: &str) {
+        self.outcomes
+            .borrow_mut()
+            .insert(uri.to_owned(), Err(error.to_owned()));
+    }
+}
+
+impl RecentRemovalBackend for FakeRemovalBackend {
+    fn delete(&self, uri: &str) -> RecentEnumerationFuture<Result<(), String>> {
+        self.calls.borrow_mut().push(uri.to_owned());
+        let hold = self.hold.clone();
+        let outcome = self.outcomes.borrow().get(uri).cloned().unwrap_or(Ok(()));
+        Box::pin(async move {
+            while hold.get() {
+                glib::timeout_future(Duration::from_millis(1)).await;
+            }
+            outcome
+        })
+    }
+}
+
+fn drain_until(done: impl Fn() -> bool) {
+    let context = glib::MainContext::default();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() && Instant::now() < deadline {
+        context.iteration(false);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        done(),
+        "the removal task did not complete within the deadline"
+    );
+}
+
+#[test]
+fn recent_removal_calls_delete_and_logs_success() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    let uri = "recent:///success".to_owned();
+
+    let output = capture_logs(|| {
+        recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+        drain_until(|| state.in_flight.borrow().is_empty());
+    });
+
+    assert_eq!(*backend.calls.borrow(), vec![uri.clone()]);
+    assert!(state.in_flight.borrow().is_empty());
+    assert!(output.contains("removed recent entry"));
+    assert!(output.contains(&uri));
+}
+
+#[test]
+fn recent_removal_failure_logs_a_warning_and_allows_retry() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let uri = "recent:///locked".to_owned();
+    backend.fail(&uri, "xbel is locked");
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+
+    let output = capture_logs(|| {
+        recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+        drain_until(|| state.in_flight.borrow().is_empty());
+    });
+
+    assert_eq!(*backend.calls.borrow(), vec![uri.clone()]);
+    assert!(output.contains("failed to remove recent entry"));
+    assert!(output.contains(&uri));
+    assert!(output.contains("xbel is locked"));
+    backend.outcomes.borrow_mut().remove(&uri);
+    recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+    drain_until(|| state.in_flight.borrow().is_empty());
+    assert_eq!(*backend.calls.borrow(), vec![uri.clone(), uri]);
+}
+
+#[test]
+fn rapid_double_invocation_on_the_same_uri_does_not_issue_two_concurrent_deletes() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    backend.hold.set(true);
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    let uri = "recent:///double-click".to_owned();
+
+    recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+    drain_until(|| !backend.calls.borrow().is_empty());
+    assert_eq!(
+        backend.calls.borrow().len(),
+        1,
+        "the first removal should have called delete() once"
+    );
+
+    recent_remove_entries_with_backend(&state, &backend_dyn, [uri.clone()]);
+    glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(10)));
+
+    assert_eq!(
+        backend.calls.borrow().len(),
+        1,
+        "a second removal for an in-flight URI must not call delete() again"
+    );
+    assert!(state.in_flight.borrow().contains(&uri));
+    backend.hold.set(false);
+    drain_until(|| state.in_flight.borrow().is_empty());
+}
+
+#[test]
+fn multi_selection_removal_issues_one_delete_per_uri() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("the async test lock should not be poisoned");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    let uris = vec![
+        "recent:///one".to_owned(),
+        "recent:///two".to_owned(),
+        "recent:///three".to_owned(),
+    ];
+
+    recent_remove_entries_with_backend(&state, &backend_dyn, uris.clone());
+    drain_until(|| state.in_flight.borrow().is_empty());
+
+    let mut called = backend.calls.borrow().clone();
+    called.sort();
+    let mut expected = uris;
+    expected.sort();
+    assert_eq!(called, expected);
+}
+
+#[test]
+fn recent_removal_rejects_real_file_uris() {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT.lock().expect("async test lock");
+    let fixture = tempfile::NamedTempFile::new().expect("target file");
+    let state = RecentRemovalState::new();
+    let backend = Rc::new(FakeRemovalBackend::new());
+    let backend_dyn: Rc<dyn RecentRemovalBackend> = backend.clone();
+    recent_remove_entries_with_backend(
+        &state,
+        &backend_dyn,
+        [
+            gio::File::for_path(fixture.path()).uri().to_string(),
+            "smb://server/share/file".to_owned(),
+        ],
+    );
+    glib::MainContext::default().block_on(glib::timeout_future(Duration::from_millis(10)));
+    assert!(backend.calls.borrow().is_empty());
+    assert!(fixture.path().exists());
+    assert!(state.in_flight.borrow().is_empty());
 }

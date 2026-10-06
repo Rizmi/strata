@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-use super::columns::ColumnSpan;
+use super::columns::{COLUMN_TRANSITION, ColumnSpan};
 use super::*;
+use crate::ui::motion::{animations_enabled, emphasized_deceleration};
+use std::time::Instant;
 
 impl ViewState {
     pub(super) fn column_span(&self, depth: usize) -> Option<ColumnSpan> {
@@ -14,7 +16,7 @@ impl ViewState {
         Some(ColumnSpan {
             left: f64::from(left),
             right: f64::from(left.saturating_add(column_width(column))),
-            total: columns.iter().map(column_width).map(f64::from).sum(),
+            trailing: f64::from(self.columns_width(depth.saturating_add(1)..)),
         })
     }
 
@@ -27,6 +29,25 @@ impl ViewState {
             .or_else(|| count.checked_sub(1))?;
         self.column_span(depth)
     }
+
+    fn navigated_len(&self) -> usize {
+        let count = self.columns.borrow().len();
+        self.browser
+            .active_depth()
+            .map_or(count, |depth| depth.saturating_add(1).min(count))
+    }
+
+    fn columns_width(
+        &self,
+        range: impl std::slice::SliceIndex<[ColumnView], Output = [ColumnView]>,
+    ) -> i32 {
+        self.columns.borrow().get(range).map_or(0, |columns| {
+            columns
+                .iter()
+                .map(column_width)
+                .fold(0, i32::saturating_add)
+        })
+    }
 }
 
 fn column_width(column: &ColumnView) -> i32 {
@@ -38,6 +59,10 @@ fn column_width(column: &ColumnView) -> i32 {
 }
 
 impl BrowserView {
+    pub(in crate::ui) fn is_resizing_columns(&self) -> bool {
+        self.state.column_resizing.get()
+    }
+
     pub(in crate::ui) fn preview_occupied_width(&self, available: i32) -> i32 {
         if self.view_mode() != BrowserMode::Columns {
             return single_pane_preview_reservation(available);
@@ -50,11 +75,31 @@ impl BrowserView {
             .fold(0, i32::saturating_add)
     }
 
-    pub(in crate::ui) fn preview_navigation_width(&self, available: i32) -> i32 {
+    pub(in crate::ui) fn preview_navigated_width(&self, available: i32) -> i32 {
+        if self.view_mode() != BrowserMode::Columns {
+            return single_pane_preview_reservation(available);
+        }
+        self.state.columns_width(..self.state.navigated_len())
+    }
+
+    pub(in crate::ui) fn preview_trailing_width(&self) -> i32 {
+        if self.view_mode() != BrowserMode::Columns {
+            return 0;
+        }
+        self.state.columns_width(self.state.navigated_len()..)
+    }
+
+    pub(in crate::ui) fn preview_navigation_width(&self) -> i32 {
+        self.state
+            .focused_column_span()
+            .map_or(COLUMN_WIDTH, |span| span.width() as i32)
+    }
+
+    pub(in crate::ui) fn preview_standard_navigation_width(&self) -> i32 {
         self.state
             .focused_column_span()
             .map_or(COLUMN_WIDTH, |span| {
-                (span.width() + span.peek_space(f64::from(available))) as i32
+                span.width().min(f64::from(COLUMN_WIDTH)) as i32
             })
     }
 
@@ -88,6 +133,55 @@ impl BrowserView {
 
     pub(in crate::ui) fn clear_preview_scroll_space(&self) {
         self.state.columns_widget.set_margin_end(0);
+    }
+
+    // Shrinking the preserved margin re-clamps the scroll offset each frame,
+    // so columns slide into the reclaimed viewport instead of snapping.
+    fn release_preview_scroll_space(&self, preview: &glib::WeakRef<gtk::Revealer>) {
+        let margin = self.state.columns_widget.margin_end();
+        if margin <= 0 {
+            return;
+        }
+        let animation_id = self
+            .state
+            .horizontal_scroll_generation
+            .get()
+            .saturating_add(1);
+        self.state.horizontal_scroll_generation.set(animation_id);
+        if !animations_enabled() {
+            self.state.columns_widget.set_margin_end(0);
+            return;
+        }
+        let started = Instant::now();
+        let generation = self.state.horizontal_scroll_generation.clone();
+        let preview = preview.clone();
+        let weak = self.downgrade();
+        let _tick = self.state.scroller.add_tick_callback(move |_, _| {
+            let Some(view) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let reopened = preview
+                .upgrade()
+                .is_some_and(|preview| preview.reveals_child());
+            if reopened
+                || generation.get() != animation_id
+                || view.view_mode() != BrowserMode::Columns
+            {
+                return glib::ControlFlow::Break;
+            }
+            let progress =
+                (started.elapsed().as_secs_f64() / COLUMN_TRANSITION.as_secs_f64()).clamp(0.0, 1.0);
+            let eased = emphasized_deceleration(progress);
+            view.state
+                .columns_widget
+                .set_margin_end((f64::from(margin) * (1.0 - eased)).round() as i32);
+            if progress >= 1.0 {
+                view.state.columns_widget.set_margin_end(0);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     pub(in crate::ui) fn bind_preview_scrolling(&self, preview: &gtk::Revealer) {
@@ -150,6 +244,18 @@ impl BrowserView {
                         .max(0);
                         let gap = view.state.columns_widget.margin_end().min(maximum_gap);
                         view.state.columns_widget.set_margin_end(gap);
+                        view.release_preview_scroll_space(&weak_preview);
+                        if let Some(span) = view.state.focused_column_span() {
+                            let target = span.reveal_target(
+                                adjustment.value(),
+                                adjustment.page_size(),
+                                adjustment.lower(),
+                                adjustment.upper(),
+                            );
+                            if target != adjustment.value() {
+                                adjustment.set_value(target);
+                            }
+                        }
                     }
                 });
             });

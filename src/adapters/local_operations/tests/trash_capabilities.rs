@@ -101,8 +101,11 @@ fn isolated_trash_supports_read_copy_move_restore_and_delete() {
                 ..file_entry(&folder.join("notes.txt"))
             },
             text_byte_limit: 100,
+            render_document: false,
             pdf_page: 0,
             media_size: crate::services::MediaPreviewSize::new(1280, 1280),
+            model_palette: crate::services::ModelPalette::default(),
+            archive_password: None,
         },
         Rc::new(move |event| emitted.borrow_mut().push(event)),
     );

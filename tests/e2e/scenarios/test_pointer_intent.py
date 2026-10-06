@@ -79,11 +79,10 @@ def test_marquee_begins_beside_content_in_a_full_pane(strata, mode, modifiers):
     folder = _full_directory(strata)
     before = sorted(folder.iterdir())
     initial = set(strata.selected_names())
-    start = _inert_point(strata, "000.txt", mode)
-    end = _inert_point(strata, "010.txt", mode)
-    drag_modifiers = (*modifiers, "alt") if mode == "Columns" else modifiers
+    start = _inert_point(strata, "001.txt", mode)
+    end = _inert_point(strata, "011.txt", mode)
     strata.pointer.drag_points(
-        start, (end[0] + 3, end[1]), modifiers=drag_modifiers
+        start, (end[0] + 3, end[1]), modifiers=modifiers
     )
 
     strata.wait(
@@ -91,7 +90,7 @@ def test_marquee_begins_beside_content_in_a_full_pane(strata, mode, modifiers):
         "marquee selection beside occupied rows",
     )
     selected = set(strata.selected_names())
-    for name in ("000.txt", "010.txt"):
+    for name in ("001.txt", "011.txt"):
         expected = name not in initial if "ctrl" in modifiers else True
         assert (name in selected) == expected
     assert strata.preview() is None
@@ -116,14 +115,14 @@ def test_pane_corner_marquee_does_not_resize_sidebar(strata, text_size, corner):
     container = strata.entry_container().screen_bounds()
     x = pane.x + 2 if corner == "leading" else container.x + container.width - 2
     start = (x, container.y + 2)
-    end = strata.entry("002.txt").screen_bounds().center
+    end = strata.entry("003.txt").screen_bounds().center
     strata.pointer.drag_points(start, end)
     strata.settle(strata.pane())
     assert sidebar.screen_bounds().width == sidebar_before.width, (
         f"{text_size}px {corner} pane corner must select files, not resize the sidebar"
     )
     strata.wait(
-        lambda: "002.txt" in strata.selected_names() and len(strata.selected_names()) > 1,
+        lambda: "003.txt" in strata.selected_names() and len(strata.selected_names()) > 1,
         "a marquee from the pane corner to select files",
     )
     selected = strata.selected_names()

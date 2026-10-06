@@ -12,11 +12,13 @@ fn deleted_trash_entries_refresh_the_trash_root() {
         kind: EntryKind::File,
         size: MetadataValue::Known(10),
         modified_unix_seconds: MetadataValue::Unknown,
+        recent_unix_seconds: MetadataValue::Unknown,
         is_hidden: false,
         mode: MetadataValue::Unknown,
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     };
 
     assert_eq!(
@@ -55,7 +57,7 @@ fn deletion_monitor_changes_publish_once_after_the_terminal_event() {
         request_id,
         completed: 1,
         total: 2,
-        deleted_location: Some(first.location.clone()),
+        deleted_locations: vec![first.location.clone()],
     });
 
     assert_eq!(
@@ -95,7 +97,7 @@ fn deletion_monitor_changes_publish_once_after_the_terminal_event() {
 }
 
 #[test]
-fn large_deletion_refreshes_sources_missing_from_the_monitor_batch() {
+fn large_deletion_updates_sources_missing_from_the_monitor_batch_without_reloading() {
     let browser = Browser::new(Rc::new(FakeFileSource));
     let watched = Location::local("/fixture");
     let entries: Vec<_> = (0..65)
@@ -124,8 +126,18 @@ fn large_deletion_refreshes_sources_missing_from_the_monitor_batch() {
         locations: entries.into_iter().map(|entry| entry.location).collect(),
     });
 
+    assert_eq!(
+        browser.column_snapshot(0).map(|column| column.count),
+        Some(0)
+    );
     assert!(
         events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, BrowserEvent::EntriesSpliced { depth: 0, .. }))
+    );
+    assert!(
+        !events
             .borrow()
             .iter()
             .any(|event| matches!(event, BrowserEvent::ColumnReloaded { depth: 0 }))
@@ -179,6 +191,7 @@ fn restoration_monitor_changes_publish_once_after_the_terminal_event() {
     complete(OperationEvent::Restored {
         request_id,
         locations: vec![first.location, second.location],
+        restored: Vec::new(),
     });
 
     assert_eq!(
@@ -234,6 +247,33 @@ fn new_files_and_folders_request_unique_naming_and_report_the_created_location()
         BrowserEvent::EntryCreated { location } if location == &Location::local("/fixture/new file")
     )));
     assert!(browser.current_operation.get().is_none());
+}
+
+#[test]
+fn every_recent_spelling_is_rejected_by_creation_and_transfer_commands() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    browser.set_operation_provider(Rc::new(ImmediateOperationProvider));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    browser.observe(move |event| observed.borrow_mut().push(event.clone()));
+    for uri in ["recent:///", "recent://", "recent:///entry-id"] {
+        let recent = Location::uri(uri);
+
+        browser.create_new_folder(recent.clone());
+        browser.create_new_file(recent.clone());
+        browser.transfer(
+            recent,
+            vec![PasteItem {
+                source: Location::local("/fixture/source.txt"),
+                conflict: TransferConflict::FailIfExists,
+            }],
+            false,
+            true,
+        );
+
+        assert!(events.borrow().is_empty(), "{uri} produced an operation");
+        assert_eq!(browser.current_operation.get(), None, "{uri}");
+    }
 }
 
 #[test]
@@ -418,8 +458,38 @@ fn transfer_failure_reports_moves_completed_before_the_error() {
     )));
     assert!(events.borrow().iter().any(|event| matches!(
         event,
-        BrowserEvent::OperationFailed { message } if message == "injected failure"
+        BrowserEvent::OperationFailed { message, .. } if message == "injected failure"
     )));
+}
+
+#[test]
+fn an_extraction_password_failure_reaches_the_view_with_its_kind() {
+    for password_failure in [
+        None,
+        Some(PasswordFailure::Required),
+        Some(PasswordFailure::Incorrect),
+    ] {
+        let browser = Browser::new(Rc::new(FakeFileSource));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = events.clone();
+        browser.observe(move |event| observed.borrow_mut().push(event.clone()));
+        let request_id = browser.begin_operation();
+
+        browser.operation_callback(request_id, false, HashSet::new())(OperationEvent::Failed {
+            request_id,
+            message: "The password may be incorrect.".to_owned(),
+            password_failure,
+        });
+
+        assert!(
+            events.borrow().iter().any(|event| matches!(
+                event,
+                BrowserEvent::OperationFailed { password_failure: reported, .. }
+                    if *reported == password_failure
+            )),
+            "{password_failure:?}"
+        );
+    }
 }
 
 #[test]
@@ -446,13 +516,15 @@ fn cancelling_extraction_keeps_progress_until_the_worker_reports_cancellation() 
         kind: EntryKind::File,
         size: MetadataValue::Unknown,
         modified_unix_seconds: MetadataValue::Unknown,
+        recent_unix_seconds: MetadataValue::Unknown,
         is_hidden: false,
         mode: MetadataValue::Unknown,
         image_dimensions: MetadataValue::Unknown,
         child_count: MetadataValue::Unknown,
         duration_seconds: MetadataValue::Unknown,
+        recent_uri: None,
     };
-    browser.extract(entry, Location::local("/fixture"), None);
+    browser.extract(entry, Location::local("/fixture"), false, None);
 
     let request_id = request_id.get().expect("extract request");
     assert_eq!(browser.current_operation.get(), Some(request_id));
@@ -642,11 +714,13 @@ fn create_and_rename_refresh_remote_columns_but_not_local_monitors() {
                         kind: EntryKind::File,
                         size: MetadataValue::Known(1),
                         modified_unix_seconds: MetadataValue::Unknown,
+                        recent_unix_seconds: MetadataValue::Unknown,
                         is_hidden: false,
                         mode: MetadataValue::Unknown,
                         image_dimensions: MetadataValue::Unknown,
                         child_count: MetadataValue::Unknown,
                         duration_seconds: MetadataValue::Unknown,
+                        recent_uri: None,
                     },
                     "new-name.txt".to_owned(),
                 );
@@ -674,6 +748,19 @@ fn deletion_targets_the_entered_folder_when_the_child_has_no_selection() {
     browser.descend(0, Location::local("/fixture/child"));
 
     let entries = browser.deletion_entries();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].location, Location::local("/fixture/child"));
+}
+
+#[test]
+fn transfers_target_the_entered_folder_when_the_child_has_no_selection() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    browser.navigate(Location::local("/fixture"));
+    browser.select(0, 0);
+    browser.descend(0, Location::local("/fixture/child"));
+
+    let entries = browser.transfer_entries();
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].location, Location::local("/fixture/child"));

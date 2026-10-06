@@ -3,7 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::{collections::HashSet, path::PathBuf, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    path::PathBuf,
+    rc::Rc,
+};
 
 use crate::model::{FileEntry, Location};
 
@@ -46,6 +51,12 @@ pub enum TransferConflict {
     FailIfExists,
     ReplaceExisting,
     KeepBoth,
+    /// Union of two folders into the existing destination. Incoming items
+    /// overwrite same-named destination items; destination-only items stay.
+    /// Overwritten originals are staged in Trash and written paths are
+    /// reported via [`OperationEvent::Merged`] so undo can restore the
+    /// pre-merge state without trashing the whole destination folder.
+    Merge,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +73,15 @@ pub struct MoveRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenameRecord {
+    pub original: Location,
+    pub current: Location,
+    pub native_name: OsString,
+    pub display_name: String,
+    pub is_hidden: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UndoMoveItem {
     pub record: MoveRecord,
     pub conflict: TransferConflict,
@@ -71,12 +91,38 @@ pub struct UndoMoveItem {
 pub struct UndoMoveRequest {
     pub id: OperationRequestId,
     pub items: Vec<UndoMoveItem>,
+    pub cleanup_locations: Vec<Location>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UndoRenameRequest {
+    pub id: OperationRequestId,
+    pub current: Location,
+    pub original: Location,
 }
 
 #[derive(Clone, Debug)]
 pub struct UndoCopyRequest {
     pub id: OperationRequestId,
     pub locations: Vec<Location>,
+}
+
+/// Identity preserved by a local move to Trash, independent of deletion timestamps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrashedOriginal {
+    pub device: u64,
+    pub inode: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct UndoMergeRequest {
+    pub id: OperationRequestId,
+    /// Paths the merge wrote fresh; undo moves them to Trash.
+    pub created: Vec<Location>,
+    /// Paths whose originals were staged in Trash before being overwritten;
+    /// undo deletes the incoming copy and restores the original.
+    pub overwritten: Vec<Location>,
+    pub originals: HashMap<Location, TrashedOriginal>,
 }
 
 #[derive(Clone, Debug)]
@@ -154,11 +200,18 @@ impl ArchiveFormat {
             Some(Self::Zip)
         } else if lower.ends_with(".7z") {
             Some(Self::SevenZ)
-        } else if lower.ends_with(".rar") {
+        } else if cfg!(feature = "rar") && lower.ends_with(".rar") {
             Some(Self::Rar)
         } else {
             None
         }
+    }
+
+    pub fn for_entry(entry: &FileEntry) -> Option<Self> {
+        if !entry.is_file() || entry.location.native_path().is_none() {
+            return None;
+        }
+        Self::from_extension(&entry.display_name)
     }
 }
 
@@ -178,6 +231,8 @@ pub struct ExtractRequest {
     pub id: OperationRequestId,
     pub entry: FileEntry,
     pub destination: Location,
+    /// Caller-reserved destinations are eligible for empty-folder cleanup.
+    pub created_destination: bool,
     pub password: Option<String>,
 }
 
@@ -187,6 +242,13 @@ pub struct CancelledOperation {
     pub failed: Vec<Location>,
     pub not_attempted: Vec<Location>,
     pub affected_locations: HashSet<Location>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PasswordFailure {
+    Required,
+    /// Includes ambiguous decryption failures that may instead indicate damaged data.
+    Incorrect,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +267,19 @@ pub enum OperationEvent {
         request_id: OperationRequestId,
         locations: Vec<Location>,
     },
+    FlushingToDevice {
+        request_id: OperationRequestId,
+    },
+    /// A folder merge finished (or staged its backups): `created` are paths
+    /// the merge wrote fresh, `overwritten` are paths whose originals now
+    /// sit in Trash. Reported per merged source so undo can rebuild the
+    /// pre-merge state even after a partial transfer.
+    Merged {
+        request_id: OperationRequestId,
+        source: Location,
+        created: Vec<Location>,
+        overwritten: Vec<Location>,
+    },
     TransferFailed {
         request_id: OperationRequestId,
         completed_locations: Vec<Location>,
@@ -213,6 +288,9 @@ pub enum OperationEvent {
     TransferProgress {
         request_id: OperationRequestId,
         completed_items: usize,
+        completed_files: usize,
+        total_files: Option<usize>,
+        current_file: Option<String>,
         transferred_bytes: u64,
         total_bytes: Option<u64>,
         created_location: Option<Location>,
@@ -221,7 +299,7 @@ pub enum OperationEvent {
         request_id: OperationRequestId,
         completed: usize,
         total: usize,
-        deleted_location: Option<Location>,
+        deleted_locations: Vec<Location>,
     },
     RestoreProgress {
         request_id: OperationRequestId,
@@ -245,11 +323,17 @@ pub enum OperationEvent {
     },
     Restored {
         request_id: OperationRequestId,
+        /// Trash entries that left the trash view.
         locations: Vec<Location>,
+        /// Where the restored items landed, recorded for undo.
+        restored: Vec<Location>,
     },
     RestoreCompletedWithErrors {
         request_id: OperationRequestId,
+        /// Trash entries that left the trash view.
         restored_locations: Vec<Location>,
+        /// Where the restored items landed, recorded for undo.
+        restored: Vec<Location>,
         message: String,
     },
     Cancelled {
@@ -259,10 +343,15 @@ pub enum OperationEvent {
     Failed {
         request_id: OperationRequestId,
         message: String,
+        password_failure: Option<PasswordFailure>,
     },
     Compressed {
         request_id: OperationRequestId,
         archive_name: String,
+        /// The finished archive, recorded so undo can trash it.
+        archive: Location,
+        /// The exact original to restore, when publication replaced an archive.
+        original: Option<TrashedOriginal>,
     },
     Extracted {
         request_id: OperationRequestId,
@@ -294,7 +383,16 @@ pub trait OperationProvider {
     fn paste(&self, request: PasteRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle;
     /// Moves completed transfers back to their original locations.
     fn undo_move(&self, request: UndoMoveRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle;
+    fn undo_rename(
+        &self,
+        request: UndoRenameRequest,
+        emit: Rc<dyn Fn(OperationEvent)>,
+    ) -> LoadHandle;
     fn undo_copy(&self, request: UndoCopyRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle;
+    /// Reverts a merge: trashes what the merge created, deletes the incoming
+    /// copies at overwritten paths, and restores the staged originals.
+    fn undo_merge(&self, request: UndoMergeRequest, emit: Rc<dyn Fn(OperationEvent)>)
+    -> LoadHandle;
     fn delete(&self, request: DeleteRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle;
     fn restore(&self, request: RestoreRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle;
     fn compress(&self, request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle;
