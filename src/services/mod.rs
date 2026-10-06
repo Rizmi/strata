@@ -94,9 +94,9 @@ pub(crate) use remote_download::{
 };
 pub(crate) use search::{RESULT_LIMIT as SEARCH_RESULT_LIMIT, refresh_search_indexes_for_rename};
 pub(crate) use search::{
-    RefusedFolders, SearchCoverage, SearchExclusions, SearchEvent, SearchHandle, SearchItem, filter_name_matches,
-    filter_query_allows_typos, fold_for_search, index_filter, index_folder_paths, index_paths,
-    index_trees_with_exclusions,
+    RefusedFolders, SearchCoverage, SearchEvent, SearchExclusions, SearchHandle, SearchItem,
+    filter_name_matches, filter_query_allows_typos, fold_for_search, index_filter,
+    index_folder_paths, index_paths, index_trees_with_exclusions,
 };
 pub(crate) use update_check::{
     ReleaseMetadata, ReleaseNotes, UpdateCheck, check_for_updates, fetch_release_notes,

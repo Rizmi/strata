@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use gtk::{gio, glib, prelude::*};
 
@@ -16,8 +16,6 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
-
-type RemoveAction = Rc<dyn Fn(&str)>;
 
 pub(super) fn show_search_exclusions_dialog(
     parent: &impl IsA<gtk::Widget>,
@@ -43,18 +41,17 @@ pub(super) fn show_search_exclusions_dialog(
     let field = form_entry();
     field.set_hexpand(true);
     field.set_placeholder_text(Some("Folder name (e.g. .venv) or ~/path…"));
+    super::super::accessibility::set_label(&field, "Search exclusion");
 
     let browse_btn = gtk::Button::with_label("Browse…");
     browse_btn.add_css_class("action-dialog-cancel");
     browse_btn.set_valign(gtk::Align::Fill);
     browse_btn.set_size_request(84, -1);
-    browse_btn.set_tooltip_text(Some("Browse for a folder to exclude"));
 
     let add_btn = gtk::Button::with_label("Add");
     add_btn.add_css_class("action-dialog-confirm");
     add_btn.set_valign(gtk::Align::Fill);
     add_btn.set_size_request(84, -1);
-    add_btn.set_tooltip_text(Some("Add to search exclusions"));
 
     let buttons_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons_box.set_homogeneous(true);
@@ -71,7 +68,6 @@ pub(super) fn show_search_exclusions_dialog(
     layout.body.append(&input_row);
     layout.body.append(&error_label);
 
-    // Reuse modal suggestion list styles for visual consistency with the Copy to dialog.
     let exclusions_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
     exclusions_box.add_css_class("transfer-suggestions");
 
@@ -86,36 +82,30 @@ pub(super) fn show_search_exclusions_dialog(
     list_scroll.add_css_class("transfer-suggestion-scroll");
     layout.body.append(&list_scroll);
 
-    let manager_for_remove = manager.clone();
-    let box_for_remove = exclusions_box.clone();
-    let on_remove: Rc<RefCell<Option<RemoveAction>>> = Rc::new(RefCell::new(None));
-    let on_remove_cell = on_remove.clone();
-    *on_remove.borrow_mut() = Some(Rc::new(move |item_to_remove: &str| {
-        let is_path = SearchExclusions::is_directory_path(item_to_remove);
-        let mut current = manager_for_remove.search_exclusions();
-        current.retain(|candidate| {
-            if is_path {
-                candidate != item_to_remove
-            } else {
-                !candidate.eq_ignore_ascii_case(item_to_remove)
+    let weak_manager = Rc::downgrade(manager);
+    manager.bind_preference(
+        &exclusions_box,
+        PreferenceManager::search_exclusions,
+        move |widget, exclusions| {
+            if let Some(manager) = weak_manager.upgrade()
+                && let Some(container) = widget.downcast_ref::<gtk::Box>()
+            {
+                render_exclusion_rows(container, &manager, exclusions);
             }
-        });
-        manager_for_remove.set_search_exclusions(current);
-        if let Some(ref cb) = *on_remove_cell.borrow() {
-            render_exclusion_rows(&box_for_remove, &manager_for_remove, cb.clone());
-        }
-    }));
+        },
+    );
 
-    if let Some(ref cb) = *on_remove.borrow() {
-        render_exclusion_rows(&exclusions_box, manager, cb.clone());
-    }
-
-    let field_for_add = field.clone();
-    let error_for_add = error_label.clone();
-    let manager_for_add = manager.clone();
-    let box_for_add = exclusions_box.clone();
-    let on_remove_for_add = on_remove.clone();
+    let field_for_add = field.downgrade();
+    let error_for_add = error_label.downgrade();
+    let manager_for_add = Rc::downgrade(manager);
     let do_add = Rc::new(move || {
+        let (Some(field_for_add), Some(error_for_add), Some(manager_for_add)) = (
+            field_for_add.upgrade(),
+            error_for_add.upgrade(),
+            manager_for_add.upgrade(),
+        ) else {
+            return;
+        };
         let raw = field_for_add.text().to_string();
         let current = manager_for_add.search_exclusions();
         match validate_exclusion_input(&raw, &current) {
@@ -125,12 +115,9 @@ pub(super) fn show_search_exclusions_dialog(
                 updated.push(trimmed);
                 manager_for_add.set_search_exclusions(updated);
                 field_for_add.set_text("");
-                if let Some(ref cb) = *on_remove_for_add.borrow() {
-                    render_exclusion_rows(&box_for_add, &manager_for_add, cb.clone());
-                }
             }
             Err(error) => {
-                set_form_field_error(&field_for_add, &error_for_add, error);
+                set_form_field_error(&field_for_add, &error_for_add, Some(error));
             }
         }
     });
@@ -140,10 +127,11 @@ pub(super) fn show_search_exclusions_dialog(
         do_add_activate();
     });
 
-    let error_for_change = error_label.clone();
-    let field_for_change = field.clone();
-    field.connect_changed(move |_| {
-        set_form_field_error(&field_for_change, &error_for_change, None);
+    let error_for_change = error_label.downgrade();
+    field.connect_changed(move |field| {
+        if let Some(error) = error_for_change.upgrade() {
+            set_form_field_error(field, &error, None);
+        }
     });
 
     let do_add_click = do_add.clone();
@@ -151,8 +139,8 @@ pub(super) fn show_search_exclusions_dialog(
         do_add_click();
     });
 
-    let field_for_browse = field.clone();
-    let error_for_browse = error_label.clone();
+    let field_for_browse = field.downgrade();
+    let error_for_browse = error_label.downgrade();
     browse_btn.connect_clicked(move |button| {
         let Some(window) = button.root().and_downcast::<gtk::Window>() else {
             return;
@@ -164,7 +152,8 @@ pub(super) fn show_search_exclusions_dialog(
         let field = field_for_browse.clone();
         let error = error_for_browse.clone();
         dialog.select_folder(Some(&window), gio::Cancellable::NONE, move |result| {
-            let Ok(file) = result else {
+            let (Ok(file), Some(field), Some(error)) = (result, field.upgrade(), error.upgrade())
+            else {
                 return;
             };
             if let Some(path) = file.path() {
@@ -186,25 +175,25 @@ pub(super) fn show_search_exclusions_dialog(
     let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
     window_overlay.add_overlay(&layer);
 
-    let close_layer = layer.clone();
-    let close_overlay = window_overlay.clone();
-    let close_root = blurred_root.clone();
-    close.connect_clicked(move |_| {
-        dismiss_modal_layer(&close_layer, &close_overlay, close_root.as_ref());
-    });
+    for button in [&close, &confirm] {
+        let weak_layer = layer.downgrade();
+        let weak_overlay = window_overlay.downgrade();
+        let weak_root = blurred_root.as_ref().map(|root| root.downgrade());
+        button.connect_clicked(move |_| {
+            if let (Some(layer), Some(overlay)) = (weak_layer.upgrade(), weak_overlay.upgrade()) {
+                let root = weak_root.as_ref().and_then(|root| root.upgrade());
+                dismiss_modal_layer(&layer, &overlay, root.as_ref());
+            }
+        });
+    }
 
-    let confirm_layer = layer.clone();
-    let confirm_overlay = window_overlay.clone();
-    let confirm_root = blurred_root.clone();
-    confirm.connect_clicked(move |_| {
-        dismiss_modal_layer(&confirm_layer, &confirm_overlay, confirm_root.as_ref());
-    });
-
-    let esc_confirm = confirm.clone();
+    let esc_confirm = confirm.downgrade();
     let key_controller = gtk::EventControllerKey::new();
     key_controller.connect_key_pressed(move |_, key, _, _| {
         if key == gtk::gdk::Key::Escape {
-            esc_confirm.emit_clicked();
+            if let Some(confirm) = esc_confirm.upgrade() {
+                confirm.emit_clicked();
+            }
             glib::Propagation::Stop
         } else {
             glib::Propagation::Proceed
@@ -215,11 +204,14 @@ pub(super) fn show_search_exclusions_dialog(
     field.grab_focus();
 }
 
-fn render_exclusion_rows(container: &gtk::Box, manager: &PreferenceManager, on_remove: RemoveAction) {
+fn render_exclusion_rows(
+    container: &gtk::Box,
+    manager: &Rc<PreferenceManager>,
+    exclusions: Vec<String>,
+) {
     while let Some(child) = container.first_child() {
         container.remove(&child);
     }
-    let exclusions = manager.search_exclusions();
     if exclusions.is_empty() {
         let empty = gtk::Label::new(Some(
             "No custom exclusions added. Common tool caches (.venv, node_modules, target, etc.) are excluded automatically.",
@@ -252,10 +244,14 @@ fn render_exclusion_rows(container: &gtk::Box, manager: &PreferenceManager, on_r
         remove.set_valign(gtk::Align::Center);
         remove.set_tooltip_text(Some("Remove exclusion"));
         remove.set_child(Some(&crate::assets::primary_icon(icons::X, 14)));
-        let on_remove_clone = on_remove.clone();
-        let item_to_remove = item.clone();
+        super::super::accessibility::set_label(&remove, &format!("Remove exclusion {item}"));
+        let weak_manager = Rc::downgrade(manager);
         remove.connect_clicked(move |_| {
-            on_remove_clone(&item_to_remove);
+            if let Some(manager) = weak_manager.upgrade() {
+                let mut exclusions = manager.search_exclusions();
+                exclusions.retain(|candidate| candidate != &item);
+                manager.set_search_exclusions(exclusions);
+            }
         });
         row.append(&remove);
 
@@ -266,31 +262,21 @@ fn render_exclusion_rows(container: &gtk::Box, manager: &PreferenceManager, on_r
 pub(super) fn validate_exclusion_input(
     raw: &str,
     current: &[String],
-) -> Result<String, Option<&'static str>> {
-    let input = raw.trim();
-    if input.is_empty() {
-        return Err(None);
-    }
-    if input == "/" || input == "~" {
-        return Err(Some("Cannot exclude root or entire home directory."));
-    }
-    let trimmed = input.trim_end_matches('/').to_string();
-    if trimmed.is_empty() || trimmed == "~" {
-        return Err(Some("Cannot exclude root or entire home directory."));
-    }
-    let is_path = SearchExclusions::is_directory_path(&trimmed);
-    if is_path && !trimmed.starts_with('/') && !trimmed.starts_with("~/") {
-        return Err(Some("Directory paths must start with / or ~/"));
-    }
-    let is_duplicate = current.iter().any(|existing| {
-        if is_path {
-            existing == &trimmed
-        } else {
-            existing.eq_ignore_ascii_case(&trimmed)
-        }
-    });
+) -> Result<String, &'static str> {
+    let normalized = SearchExclusions::normalize_entry(raw)?;
+    let is_path = SearchExclusions::is_directory_path(&normalized);
+    let is_duplicate = current
+        .iter()
+        .filter_map(|item| SearchExclusions::normalize_entry(item).ok())
+        .any(|existing| {
+            if is_path {
+                existing == normalized
+            } else {
+                existing.eq_ignore_ascii_case(&normalized)
+            }
+        });
     if is_duplicate {
-        return Err(Some("This exclusion has already been added."));
+        return Err("This exclusion has already been added.");
     }
-    Ok(trimmed)
+    Ok(normalized)
 }

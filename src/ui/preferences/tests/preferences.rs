@@ -393,7 +393,10 @@ fn every_saved_preference_loads_before_any_settings_page_exists() {
                 MediaPreviewBackend::Software
             );
             assert!(manager.search_open_files_directly());
-            assert_eq!(manager.search_exclusions(), vec![".venv", "/fixture/custom_excluded"]);
+            assert_eq!(
+                manager.search_exclusions(),
+                vec![".venv", "/fixture/custom_excluded"]
+            );
             assert!(!manager.type_to_search());
             assert!(manager.arrow_navigation_scoped());
             assert!(manager.tenxer_mode());

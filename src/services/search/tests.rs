@@ -889,10 +889,48 @@ fn index_reports_truncated_when_the_walker_discards_an_inaccessible_directory() 
 }
 
 #[test]
+fn excluded_nested_roots_leave_scheduler_capacity_for_visible_roots() {
+    let fixture = tempfile::tempdir().expect("search fixture");
+    let excluded = fixture.path().join("private-build/nested");
+    let visible = fixture.path().join("visible");
+    for root in [&excluded, &visible] {
+        fs::create_dir_all(root).expect("search root");
+        fs::write(root.join("needle.txt"), "fixture").expect("search file");
+    }
+    let (search, events) = super::index_trees_with_scheduler_budget_and_exclusions(
+        vec![excluded, visible.clone()],
+        false,
+        super::TraversalBudget {
+            max_entries: 1,
+            max_depth: 64,
+            time_budget: Duration::from_secs(10),
+            initial_directory_batch: 1,
+            max_pending_directories: 1,
+        },
+        super::SearchExclusions::from_strings(&["private-build".into()]),
+    );
+    search.query("needle");
+    let Some(SearchEvent::Results {
+        items, coverage, ..
+    }) = wait_for_results(&events)
+    else {
+        panic!("expected completed search");
+    };
+    assert_eq!(
+        items.iter().map(|item| &item.path).collect::<Vec<_>>(),
+        vec![&visible.join("needle.txt")]
+    );
+    assert!(
+        !coverage.is_partial(),
+        "excluded roots must not consume traversal capacity"
+    );
+}
+
+#[test]
 fn index_excludes_configured_folder_names() {
     let root = unique_fixture_root("excluded-folder-name");
-    let venv_dir = root.join("project/.venv");
-    let nested_venv_dir = root.join("project/sub/.venv");
+    let venv_dir = root.join("project/private-build");
+    let nested_venv_dir = root.join("project/sub/PRIVATE-BUILD");
     let src_dir = root.join("project/src");
     fs::create_dir_all(&venv_dir).expect("create fixture venv");
     fs::create_dir_all(&nested_venv_dir).expect("create fixture nested venv");
@@ -908,7 +946,7 @@ fn index_excludes_configured_folder_names() {
         usize::MAX,
         64,
         Duration::from_secs(10),
-        vec![".venv".to_string()],
+        vec!["private-build".to_string()],
     );
     search.query("lib.py");
     let event = wait_for_results(&events);
@@ -924,7 +962,7 @@ fn index_excludes_configured_folder_names() {
     };
     assert!(
         items.is_empty(),
-        "files inside excluded .venv folders should not be indexed, found: {items:?}"
+        "files inside custom excluded folders should not be indexed, found: {items:?}"
     );
 
     let Some(SearchEvent::Results {

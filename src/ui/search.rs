@@ -12,7 +12,8 @@ use std::{
 use gtk::{gdk, glib, prelude::*};
 
 use crate::services::{
-    NavigationHistory, SearchCoverage, SearchEvent, SearchHandle, SearchItem, index_trees_with_exclusions,
+    NavigationHistory, SearchCoverage, SearchEvent, SearchHandle, SearchItem,
+    index_trees_with_exclusions,
 };
 
 const MAX_RESULT_UPDATES_PER_FRAME: usize = 8;

@@ -301,7 +301,6 @@ fn append_search_exclusions_option(content: &gtk::Box, manager: &Rc<PreferenceMa
     manage.set_valign(gtk::Align::Center);
     manage.add_css_class("form-control");
     manage.add_css_class("settings-choice");
-    manage.set_tooltip_text(Some("Manage folders and directories excluded from search"));
     super::super::accessibility::set_label(&manage, "Global search exclusions");
 
     let manager_for_click = manager.clone();

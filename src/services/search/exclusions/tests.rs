@@ -3,74 +3,81 @@
 use super::*;
 
 #[test]
-fn classifies_folder_names_and_directories() {
-    let raw = vec![
-        ".venv".to_owned(),
-        "node_modules/".to_owned(),
-        "~/Downloads".to_owned(),
-        "/var/log".to_owned(),
-        "  build  ".to_owned(),
-    ];
-    let exclusions = SearchExclusions::from_strings(&raw);
-    assert_eq!(
-        exclusions.folder_names,
-        vec![".venv", "build", "node_modules"]
-    );
-    let mut expected_dirs = vec![
-        glib::home_dir().join("Downloads"),
-        PathBuf::from("/var/log"),
-    ];
-    expected_dirs.sort();
-    assert_eq!(exclusions.directories, expected_dirs);
+fn folder_rules_match_ancestors_but_not_same_named_files() {
+    let exclusions = SearchExclusions::from_strings(&["cache".into()]);
+    for (path, directory, excluded) in [
+        ("/project/cache", true, true),
+        ("/other/CACHE", true, true),
+        ("/project/cache/nested", true, true),
+        ("/project/cache/nested/file.py", false, true),
+        ("/project/cache", false, false),
+        ("/project/caches", true, false),
+        ("/project/file.py", false, false),
+    ] {
+        let path = Path::new(path);
+        assert_eq!(
+            exclusions.is_excluded(
+                path,
+                path.file_name()
+                    .expect("basename")
+                    .to_str()
+                    .expect("UTF-8 fixture"),
+                directory
+            ),
+            excluded,
+            "{path:?}"
+        );
+    }
 }
 
 #[test]
-fn matches_folder_name_anywhere_in_tree() {
-    let exclusions = SearchExclusions::from_strings(&[".venv".to_owned()]);
-    assert!(exclusions.is_excluded(Path::new("/home/user/project/.venv"), ".venv", true));
-    assert!(exclusions.is_excluded(Path::new("/opt/app/.VENV"), ".VENV", true));
-    assert!(exclusions.is_excluded(
-        Path::new("/home/user/project/.venv/nested/file.py"),
-        "file.py",
-        false
-    ));
-    assert!(!exclusions.is_excluded(Path::new("/home/user/project/venv"), "venv", true));
-    assert!(!exclusions.is_excluded(Path::new("/home/user/project/file.txt"), "file.txt", false));
-}
-
-#[test]
-fn matches_specific_directory_and_children() {
+fn directory_rules_expand_home_and_respect_component_boundaries_and_case() {
     let home = glib::home_dir();
-    let target_dir = home.join("Secret");
-    let exclusions = SearchExclusions::from_strings(&["~/Secret".to_owned()]);
-
-    assert!(exclusions.is_excluded(&target_dir, "Secret", true));
-    assert!(exclusions.is_excluded(&target_dir.join("sub"), "sub", true));
-    assert!(exclusions.is_excluded(&target_dir.join("file.txt"), "file.txt", false));
-
-    let other_dir = home.join("Other/Secret");
-    assert!(!exclusions.is_excluded(&other_dir, "Secret", true));
+    let exclusions = SearchExclusions::from_strings(&["~/Secret/./nested//".into()]);
+    for (suffix, excluded) in [
+        ("Secret/nested", true),
+        ("Secret/nested/file.txt", true),
+        ("Secret/nested-other/file.txt", false),
+        ("Other/Secret/nested", false),
+        ("secret/nested/file.txt", false),
+    ] {
+        let path = home.join(suffix);
+        assert_eq!(
+            exclusions.is_excluded(
+                &path,
+                path.file_name()
+                    .expect("basename")
+                    .to_str()
+                    .expect("UTF-8 fixture"),
+                true
+            ),
+            excluded,
+            "{suffix}"
+        );
+    }
 }
 
 #[test]
-fn identifies_directory_paths_versus_folder_names() {
-    assert!(SearchExclusions::is_directory_path("~/Downloads"));
-    assert!(SearchExclusions::is_directory_path("/var/log"));
-    assert!(SearchExclusions::is_directory_path("foo/bar"));
-
-    assert!(!SearchExclusions::is_directory_path(r"foo\bar"));
-    assert!(!SearchExclusions::is_directory_path(".venv"));
-    assert!(!SearchExclusions::is_directory_path("node_modules"));
-    assert!(!SearchExclusions::is_directory_path("build"));
-}
-
-#[test]
-fn resolves_relative_path_and_ignores_bare_root_or_home() {
+fn equivalent_rules_share_a_cache_key_and_invalid_saved_rules_are_ignored() {
     let home = glib::home_dir();
     let exclusions = SearchExclusions::from_strings(&[
-        "relative/sub".to_owned(),
-        "~".to_owned(),
-        "/".to_owned(),
+        " Cache/ ".into(),
+        "cache".into(),
+        "~/Secret//./nested".into(),
+        home.join("Secret/nested").to_string_lossy().into_owned(),
+        "relative/sub".into(),
+        "~someone".into(),
+        "/".into(),
+        "~".into(),
+        "/var/../".into(),
+        ".".into(),
+        "..".into(),
+        "bad\0name".into(),
+        home.to_string_lossy().into_owned(),
     ]);
-    assert_eq!(exclusions.directories, vec![home.join("relative/sub")]);
+    assert_eq!(
+        exclusions,
+        SearchExclusions::from_strings(&["cache".into(), "~/Secret/nested".into()])
+    );
+    assert!(!exclusions.is_excluded(Path::new("/var/other"), "other", true));
 }

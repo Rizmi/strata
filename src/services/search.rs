@@ -475,7 +475,10 @@ impl QueryScorer<'_> {
     }
 }
 
-type IndexRegistry = Vec<((Vec<PathBuf>, bool, bool, SearchExclusions), Weak<SharedIndex>)>;
+type IndexRegistry = Vec<(
+    (Vec<PathBuf>, bool, bool, SearchExclusions),
+    Weak<SharedIndex>,
+)>;
 static SHARED_INDEXES: OnceLock<Mutex<IndexRegistry>> = OnceLock::new();
 static REFRESH_TRAVERSAL: Mutex<()> = Mutex::new(());
 
@@ -563,8 +566,6 @@ pub fn index_folder_paths(
     )
 }
 
-/// Concurrent sessions share a snapshot until the last handle is dropped.
-/// Indexing and scoring run off the GTK thread.
 #[cfg(test)]
 pub fn index_trees(
     roots: Vec<PathBuf>,
@@ -573,6 +574,8 @@ pub fn index_trees(
     index_trees_with_exclusions(roots, show_hidden, Vec::new())
 }
 
+/// Concurrent sessions share a snapshot until the last handle is dropped.
+/// Indexing and scoring run off the GTK thread.
 pub fn index_trees_with_exclusions(
     roots: Vec<PathBuf>,
     show_hidden: bool,
@@ -660,7 +663,13 @@ pub(crate) fn refresh_search_indexes_for_rename(from: &Path, to: &Path) {
         let mut seen = HashSet::new();
         roots.retain(|root| seen.insert(root.clone()));
         if let Some(index) = index.upgrade() {
-            request_index_refresh(index, roots.clone(), *hidden, *recursive, exclusions.clone());
+            request_index_refresh(
+                index,
+                roots.clone(),
+                *hidden,
+                *recursive,
+                exclusions.clone(),
+            );
         }
     }
 }
@@ -1156,6 +1165,10 @@ fn build_index(
     let mut pending_directory_count = 0_usize;
     let mut next_sequence = 0_u64;
     for root in roots {
+        let name = root.file_name().unwrap_or_default().to_string_lossy();
+        if exclusions.is_excluded(&root, &name, true) {
+            continue;
+        }
         if pending_directory_count >= max_pending_directories {
             coverage.directory_limit = true;
             continue;
@@ -1184,18 +1197,6 @@ fn build_index(
         };
         pending_directory_count = pending_directory_count.saturating_sub(1);
         let mut directory = scheduled.task;
-        let dir_name = directory
-            .path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let is_dir_excluded = exclusions.is_excluded(&directory.path, &dir_name, true);
-        if is_dir_excluded {
-            if !branch.is_empty() {
-                pending_branches.push_back(branch);
-            }
-            continue 'walk;
-        }
         let mut new_branches = Vec::new();
         if index.indexing_cancelled() {
             return;
@@ -1247,6 +1248,10 @@ fn build_index(
             }
             let file_type = entry.file_type();
             let is_directory = file_type.is_some_and(|kind| kind.is_dir());
+            let name = entry.file_name().to_string_lossy();
+            if exclusions.is_excluded(entry.path(), &name, is_directory) {
+                continue;
+            }
             // Structural entries are cheap within a branch so nested documents progress
             // before dense runs of regular files consume the shared entry budget.
             slice_work = slice_work.saturating_add(if is_directory { 1 } else { 8 });
@@ -1269,10 +1274,6 @@ fn build_index(
                     .unwrap_or(MetadataValue::Unknown)
             };
             let path = entry.into_path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if exclusions.is_excluded(&path, &name, is_directory) {
-                continue;
-            }
             let kind = file_type.map_or(EntryKind::Other, |kind| native_kind(kind, &path));
             match admit_path(&mut indexed_paths, &path, max_entries) {
                 PathAdmission::Duplicate => continue,
