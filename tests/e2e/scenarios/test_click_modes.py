@@ -52,7 +52,8 @@ def test_single_click_opens_a_folder_in_a_clipped_parent_column(
 
     folder = strata.entry("pictures", directory=strata.fixture.root.name)
     bounds = folder.screen_bounds()
-    strata.pointer.move_to(max(bounds.x, browser_left) + 12, bounds.center[1])
+    press_x, press_y = max(bounds.x, browser_left) + 12, bounds.center[1]
+    strata.pointer.move_to(press_x, press_y)
     strata.pointer.connection.button(1, True)
     try:
         if reveal_during_press:
@@ -65,6 +66,8 @@ def test_single_click_opens_a_folder_in_a_clipped_parent_column(
             value = Atspi.Accessible.get_value_iface(scrollbar.accessible)
             assert Atspi.Value.set_current_value(value, 0.0)
         time.sleep(0.2)
+        # Sub-threshold pointer jitter must not turn column scrolling into a drag.
+        strata.pointer.move_to(press_x + 2, press_y)
     finally:
         strata.pointer.connection.button(1, False)
 
