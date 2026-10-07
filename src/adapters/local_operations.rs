@@ -861,7 +861,9 @@ fn transfer_size(
                     gio::IOErrorEnum::Failed,
                     &format!(
                         "{} is too large for a FAT32 drive (maximum file size: 4 GiB). Use an exFAT or another large-file-capable drive instead.",
-                        file.basename().unwrap_or_default().to_string_lossy()
+                        transfer_source_name(&file)
+                            .unwrap_or_default()
+                            .to_string_lossy()
                     ),
                 ));
             }
@@ -995,18 +997,30 @@ fn transfer_is_noop(source: &gio::File, destination: &gio::File, target: &gio::F
     source.equal(target) || source.equal(destination) || destination.has_prefix(source)
 }
 
+pub(crate) fn transfer_source_name(source: &gio::File) -> Option<OsString> {
+    let name = source.basename()?;
+    if source.uri().starts_with("trash:") {
+        let bytes = name.as_os_str().as_bytes();
+        if (bytes.starts_with(b"\\") || bytes.windows(8).any(|w| w == b"\\.Trash-"))
+            && let Some(pos) = bytes.iter().rposition(|&b| b == b'\\')
+        {
+            let leaf = &bytes[pos + 1..];
+            if !leaf.is_empty() {
+                return Some(OsStr::from_bytes(leaf).to_os_string());
+            }
+        }
+    }
+    Some(name.into_os_string())
+}
+
 fn default_transfer_target(
     source: &gio::File,
     destination: &gio::File,
     fat_family: bool,
     used_names: &mut HashSet<OsString>,
 ) -> Option<(PathBuf, gio::File)> {
-    let name = source.basename()?;
-    let name = PathBuf::from(fat_family_child_name(
-        name.as_os_str(),
-        fat_family,
-        used_names,
-    ));
+    let name = transfer_source_name(source)?;
+    let name = PathBuf::from(fat_family_child_name(&name, fat_family, used_names));
     let target = destination.child(&name);
     Some((name, target))
 }
@@ -1930,8 +1944,7 @@ fn copy_recursively_with_progress(
             let track_bytes = source_size.is_none_or(|size| size >= BYTE_PROGRESS_MIN_FILE_SIZE);
             let file_progress = progress.as_ref().map(|progress| {
                 progress.begin_file(
-                    source
-                        .basename()
+                    transfer_source_name(&source)
                         .unwrap_or_default()
                         .to_string_lossy()
                         .into_owned(),
@@ -2363,8 +2376,7 @@ async fn move_local(
             // than claiming an equivalent guarantee.
             let move_progress = progress.as_ref().map(|progress| {
                 progress.begin_file(
-                    source
-                        .basename()
+                    transfer_source_name(&source)
                         .unwrap_or_default()
                         .to_string_lossy()
                         .into_owned(),

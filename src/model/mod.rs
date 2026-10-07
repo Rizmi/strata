@@ -2,7 +2,8 @@
 
 use std::{
     cmp::Ordering,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -153,10 +154,22 @@ impl Location {
     pub fn file_name(&self) -> Option<OsString> {
         match &self.kind {
             LocationKind::Native(path) => path.file_name().map(OsString::from),
-            LocationKind::Uri(uri) => gio::File::for_uri(uri)
-                .basename()?
-                .file_name()
-                .map(OsString::from),
+            LocationKind::Uri(uri) => {
+                let file = gio::File::for_uri(uri);
+                let basename = file.basename()?;
+                if uri.starts_with("trash:") {
+                    let bytes = basename.as_os_str().as_bytes();
+                    if (bytes.starts_with(b"\\") || bytes.windows(8).any(|w| w == b"\\.Trash-"))
+                        && let Some(pos) = bytes.iter().rposition(|&b| b == b'\\')
+                    {
+                        let leaf = &bytes[pos + 1..];
+                        if !leaf.is_empty() {
+                            return Some(OsStr::from_bytes(leaf).to_os_string());
+                        }
+                    }
+                }
+                basename.file_name().map(OsString::from)
+            }
         }
     }
 

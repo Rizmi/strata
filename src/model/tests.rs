@@ -318,6 +318,26 @@ fn transfer_targets_keep_the_item_name_under_the_destination() {
         Location::local("/home/user/a b.txt").transfer_target(&Location::uri("smb://host/share")),
         Some(Location::uri("smb://host/share/a%20b.txt"))
     );
+    assert_eq!(
+        Location::uri("trash:///report.txt")
+            .transfer_target(&Location::local("/home/user/Documents")),
+        Some(Location::local("/home/user/Documents/report.txt"))
+    );
+    assert_eq!(
+        Location::uri("trash:///%5Cmnt%5CData%5C.Trash-1000%5Cfiles%5CSAMPLED")
+            .transfer_target(&Location::local("/home/user/Documents")),
+        Some(Location::local("/home/user/Documents/SAMPLED"))
+    );
+    assert_eq!(
+        Location::uri("trash:///%5Cmnt%5CData%5C.Trash-1000%5Cfiles%5CSAMPLED.2")
+            .transfer_target(&Location::local("/mnt/Data")),
+        Some(Location::local("/mnt/Data/SAMPLED.2"))
+    );
+    assert_eq!(
+        Location::uri("trash:///foo%5Cbar.txt")
+            .transfer_target(&Location::local("/home/user/Documents")),
+        Some(Location::local("/home/user/Documents/foo\\bar.txt"))
+    );
 }
 
 #[test]
