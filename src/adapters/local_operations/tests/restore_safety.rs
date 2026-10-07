@@ -35,7 +35,7 @@ fn unsupported_restore_rename_never_downgrades_atomicity() -> Result<(), Box<dyn
                 .expect_err("unsupported atomic operation")
                 .to_string();
             assert!(
-                message.contains("does not support atomic no-replace"),
+                message.contains("something already exists at the destination"),
                 "{message}"
             );
             assert!(!message.contains("across volumes"));
@@ -48,6 +48,43 @@ fn unsupported_restore_rename_never_downgrades_atomicity() -> Result<(), Box<dyn
                 })?,
                 b"original"
             );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_restore_rename_safely_restores_when_destination_available()
+-> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT.lock()?;
+    for error in [Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP] {
+        for directory in [false, true] {
+            let fixture = tempfile::tempdir()?;
+            let source = fixture.path().join("source");
+            let destination = fixture.path().join("destination");
+            if directory {
+                fs::create_dir(&source)?;
+                fs::write(source.join("contents"), b"original")?;
+            } else {
+                fs::write(&source, b"original")?;
+            }
+            let result = glib::MainContext::default().block_on(move_restore_path_with(
+                source.clone(),
+                destination.clone(),
+                fixture.path().to_path_buf(),
+                gio::Cancellable::new(),
+                move |_, _, _, _, flags| {
+                    assert_eq!(flags, RenameFlags::NOREPLACE);
+                    Err(error)
+                },
+            ));
+            assert!(result.is_ok(), "restore should succeed: {result:?}");
+            assert!(!source.exists(), "source should be removed from trash");
+            if directory {
+                assert_eq!(fs::read(destination.join("contents"))?, b"original");
+            } else {
+                assert_eq!(fs::read(&destination)?, b"original");
+            }
         }
     }
     Ok(())

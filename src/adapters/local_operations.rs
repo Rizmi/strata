@@ -2251,6 +2251,11 @@ async fn move_restore_path(
     .await
 }
 
+enum RestorePathOutcome {
+    Done,
+    RequiresExclusiveCopy { is_directory: bool },
+}
+
 async fn move_restore_path_with(
     source_path: PathBuf,
     target_path: PathBuf,
@@ -2289,34 +2294,139 @@ async fn move_restore_path_with(
             .await?;
 
     let display_name = source_name.to_string_lossy().into_owned();
-    gio::spawn_blocking(move || {
-            if cancellable.is_cancelled() {
-                return Err(rustix::io::Errno::CANCELED);
+    let blocking_cancellable = cancellable.clone();
+    let outcome = gio::spawn_blocking(move || {
+        if blocking_cancellable.is_cancelled() {
+            return Err(rustix::io::Errno::CANCELED);
+        }
+        // Never fall back to an unflagged rename: the no-clobber check must be atomic.
+        let renamed = rename(
+            &source_parent,
+            &source_name,
+            &target_parent,
+            &target_name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        );
+        match renamed {
+            Ok(()) => Ok(RestorePathOutcome::Done),
+            Err(
+                rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP,
+            ) => {
+                if blocking_cancellable.is_cancelled() {
+                    return Err(rustix::io::Errno::CANCELED);
+                }
+                let stat = rustix::fs::statat(
+                    &source_parent,
+                    &source_name,
+                    rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+                )?;
+                let is_directory = rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                    == rustix::fs::FileType::Directory;
+                if !is_directory {
+                    match rustix::fs::linkat(
+                        &source_parent,
+                        &source_name,
+                        &target_parent,
+                        &target_name,
+                        rustix::fs::AtFlags::empty(),
+                    ) {
+                        Ok(()) => {
+                            if let Err(error) = rustix::fs::unlinkat(
+                                &source_parent,
+                                &source_name,
+                                rustix::fs::AtFlags::empty(),
+                            ) {
+                                let _ = rustix::fs::unlinkat(
+                                    &target_parent,
+                                    &target_name,
+                                    rustix::fs::AtFlags::empty(),
+                                );
+                                return Err(error);
+                            }
+                            return Ok(RestorePathOutcome::Done);
+                        }
+                        Err(rustix::io::Errno::EXIST) => return Err(rustix::io::Errno::EXIST),
+                        Err(
+                            rustix::io::Errno::PERM
+                            | rustix::io::Errno::NOSYS
+                            | rustix::io::Errno::OPNOTSUPP
+                            | rustix::io::Errno::XDEV,
+                        ) => {
+                            // Filesystem does not support hard links; fall through to exclusive copy.
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Ok(RestorePathOutcome::RequiresExclusiveCopy { is_directory })
             }
-            // Never fall back to an unflagged rename: the no-clobber check must be atomic.
-            rename(
-                &source_parent,
-                &source_name,
-                &target_parent,
-                &target_name,
-                rustix::fs::RenameFlags::NOREPLACE,
-            )
-        })
-        .await
-        .map_err(|_| io_error("Restore task panicked"))?
-        .map_err(|error| match error {
-            rustix::io::Errno::XDEV => {
-                io_error(format!("Could not restore {display_name} across volumes"))
-            }
-            rustix::io::Errno::EXIST => io_error(format!(
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|_| io_error("Restore task panicked"))?;
+
+    let is_directory = match outcome {
+        Ok(RestorePathOutcome::Done) => return Ok(()),
+        Ok(RestorePathOutcome::RequiresExclusiveCopy { is_directory }) => is_directory,
+        Err(rustix::io::Errno::XDEV) => {
+            return Err(io_error(format!(
+                "Could not restore {display_name} across volumes"
+            )));
+        }
+        Err(rustix::io::Errno::EXIST) => {
+            return Err(io_error(format!(
                 "Could not restore {display_name}: something already exists at the destination"
-            )),
-            rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP => io_error(format!(
-                "Could not restore {display_name}: this filesystem does not support atomic no-replace renames. The item remains in Trash. Copy it to a destination you choose instead."
-            )),
-            rustix::io::Errno::CANCELED => cancelled_local_operation(),
-            error => io_error(format!("Could not restore {display_name}: {error}")),
-        })
+            )));
+        }
+        Err(rustix::io::Errno::CANCELED) => return Err(cancelled_local_operation()),
+        Err(error) => {
+            return Err(io_error(format!(
+                "Could not restore {display_name}: {error}"
+            )));
+        }
+    };
+
+    let source_file = gio::File::for_path(&source_path);
+    let target_file = gio::File::for_path(&target_path);
+    let created_root = Rc::new(CreatedCopyRoot::new());
+    let copied = copy_recursively_with_progress(
+        source_file.clone(),
+        target_file.clone(),
+        false,
+        cancellable.clone(),
+        Some(created_root.clone()),
+        None,
+        false,
+    )
+    .await;
+    let copied = if copied.is_err() && created_root.was_created.get() {
+        let cleanup = permanently_delete_maybe_local_if_unchanged(
+            target_file,
+            true,
+            created_root.identity.get(),
+            gio::Cancellable::new(),
+        )
+        .await;
+        copied.map_err(|error| copy_failure_after_cleanup(error, cleanup))
+    } else {
+        copied
+    };
+    let copied = copied.map_err(|error| {
+        if error.matches(gio::IOErrorEnum::Exists) {
+            io_error(format!(
+                "Could not restore {display_name}: something already exists at the destination"
+            ))
+        } else {
+            io_error(format!("Could not restore {display_name}: {error}"))
+        }
+    });
+    copied?;
+    let cleanup = permanently_delete_maybe_local(source_file, is_directory, cancellable).await;
+    cleanup.map_err(|error| {
+        io_error(format!(
+            "The item was restored, but its trash copy could not be removed: {error}"
+        ))
+    })
 }
 
 async fn move_restore(
