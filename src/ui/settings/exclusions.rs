@@ -53,6 +53,7 @@ pub(super) fn search_exclusions_control(manager: &Rc<PreferenceManager>) -> gtk:
         .child(&exclusions_box)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(180)
         .max_content_height(180)
         .propagate_natural_height(true)
         .build();
@@ -185,9 +186,13 @@ fn render_exclusion_rows(
         let remove = gtk::Button::new();
         remove.add_css_class("settings-action-button");
         remove.add_css_class("settings-action-icon-button");
+        remove.add_css_class("danger");
         remove.set_valign(gtk::Align::Center);
         remove.set_tooltip_text(Some("Remove exclusion"));
-        remove.set_child(Some(&crate::assets::primary_icon(icons::X, 14)));
+        let remove_icon = crate::assets::danger_icon(icons::TRASH, crate::assets::CHROME_ICON_PX);
+        remove_icon.set_halign(gtk::Align::Center);
+        remove_icon.set_valign(gtk::Align::Center);
+        remove.set_child(Some(&remove_icon));
         super::super::accessibility::set_label(&remove, &format!("Remove exclusion {item}"));
         let weak_manager = Rc::downgrade(manager);
         remove.connect_clicked(move |_| {
