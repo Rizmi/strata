@@ -646,3 +646,90 @@ fn non_fat_copy_leaves_invalid_characters_untouched() -> Result<(), Box<dyn Erro
     assert_eq!(fs::read(target.join("a?b:c.txt"))?, b"unchanged");
     Ok(())
 }
+
+#[test]
+fn commit_staged_falls_back_when_noreplace_is_unsupported() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    for error in [
+        rustix::io::Errno::INVAL,
+        rustix::io::Errno::NOSYS,
+        rustix::io::Errno::OPNOTSUPP,
+    ] {
+        for directory in [false, true] {
+            let root = tempfile::tempdir()?;
+            let staged = root.path().join("staged");
+            let target = root.path().join("target");
+            if directory {
+                fs::create_dir_all(staged.join("nested"))?;
+                fs::write(staged.join("nested/file.txt"), b"directory data")?;
+            } else {
+                fs::write(&staged, b"file data")?;
+            }
+
+            let result =
+                super::super::commit_staged_without_replace_with(&staged, &target, |_, _| {
+                    Err(error)
+                });
+            assert!(result.is_ok(), "fallback commit must succeed for {error:?}");
+            assert!(!staged.exists(), "staged source should no longer exist");
+            assert!(target.exists(), "target destination must exist");
+            if directory {
+                assert_eq!(
+                    fs::read_to_string(target.join("nested/file.txt"))?,
+                    "directory data"
+                );
+            } else {
+                assert_eq!(fs::read_to_string(&target)?, "file data");
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn commit_staged_fallback_refuses_to_overwrite_existing_target() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    for error in [
+        rustix::io::Errno::INVAL,
+        rustix::io::Errno::NOSYS,
+        rustix::io::Errno::OPNOTSUPP,
+    ] {
+        for directory in [false, true] {
+            let root = tempfile::tempdir()?;
+            let staged = root.path().join("staged");
+            let target = root.path().join("target");
+            if directory {
+                fs::create_dir(&staged)?;
+                fs::create_dir(&target)?;
+                fs::write(target.join("existing.txt"), b"target data")?;
+            } else {
+                fs::write(&staged, b"new data")?;
+                fs::write(&target, b"target data")?;
+            }
+
+            let result =
+                super::super::commit_staged_without_replace_with(&staged, &target, |_, _| {
+                    Err(error)
+                });
+            assert_eq!(
+                result.expect_err("must refuse to overwrite existing target"),
+                rustix::io::Errno::EXIST,
+                "must refuse to overwrite existing target"
+            );
+            assert!(staged.exists(), "staged item must be preserved on conflict");
+            if directory {
+                assert_eq!(
+                    fs::read_to_string(target.join("existing.txt"))?,
+                    "target data"
+                );
+            } else {
+                assert_eq!(fs::read_to_string(&target)?, "target data");
+            }
+        }
+    }
+    Ok(())
+}

@@ -1107,14 +1107,9 @@ async fn copy_new_local_regular_file(
             None,
         )?;
         cancellable.set_error_if_cancelled()?;
-        rustix::fs::renameat_with(
-            rustix::fs::CWD,
-            staged.path(),
-            rustix::fs::CWD,
-            &target_path,
-            rustix::fs::RenameFlags::NOREPLACE,
-        )
-        .map_err(|error| io_error(format!("Could not finish copying the item: {error}")))?;
+        commit_staged_without_replace(staged.path(), &target_path)
+            .map_err(|error| io_error(format!("Could not finish copying the item: {error}")))?;
+        let _ = staged.keep();
         Ok(())
     })
     .await
@@ -2093,29 +2088,27 @@ async fn copy_new_recursively_on_filesystem(
         }
 
         let staged_path = staged.path().to_owned();
-        let committed = gio::spawn_blocking(move || {
-            rustix::fs::renameat_with(
-                rustix::fs::CWD,
-                &staged_path,
-                rustix::fs::CWD,
-                &target_path,
-                rustix::fs::RenameFlags::NOREPLACE,
-            )
-        })
-        .await
-        .map_err(|_| io_error("The copy worker stopped unexpectedly"));
-        let committed = match committed {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(io_error(format!(
-                "Could not finish copying the item: {error}"
-            ))),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = committed {
-            let cleanup = discard_incomplete_staged(staged).await;
-            return Err(copy_failure_after_cleanup(error, cleanup));
+        let committed =
+            gio::spawn_blocking(move || commit_staged_without_replace(&staged_path, &target_path))
+                .await
+                .map_err(|_| io_error("The copy worker stopped unexpectedly"));
+        match committed {
+            Ok(Ok(())) => {
+                let _ = staged.keep();
+                return Ok(());
+            }
+            Ok(Err(error)) => {
+                let cleanup = discard_incomplete_staged(staged).await;
+                return Err(copy_failure_after_cleanup(
+                    io_error(format!("Could not finish copying the item: {error}")),
+                    cleanup,
+                ));
+            }
+            Err(error) => {
+                let cleanup = discard_incomplete_staged(staged).await;
+                return Err(copy_failure_after_cleanup(error, cleanup));
+            }
         }
-        return Ok(());
     }
 
     let created_root = Rc::new(CreatedCopyRoot::new());
@@ -2465,6 +2458,68 @@ async fn discard_incomplete_staged(staged: StagedSibling) -> Result<(), glib::Er
     }
 }
 
+pub(crate) fn commit_staged_without_replace(from: &Path, to: &Path) -> rustix::io::Result<()> {
+    commit_staged_without_replace_with(from, to, |from, to| {
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            from,
+            rustix::fs::CWD,
+            to,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+    })
+}
+
+pub(crate) fn commit_staged_without_replace_with(
+    from: &Path,
+    to: &Path,
+    rename: impl FnOnce(&Path, &Path) -> rustix::io::Result<()>,
+) -> rustix::io::Result<()> {
+    match rename(from, to) {
+        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
+            commit_staged_fallback(from, to)
+        }
+        result => result,
+    }
+}
+
+fn commit_staged_fallback(from: &Path, to: &Path) -> rustix::io::Result<()> {
+    let stat = rustix::fs::statat(rustix::fs::CWD, from, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Directory {
+        match rustix::fs::linkat(
+            rustix::fs::CWD,
+            from,
+            rustix::fs::CWD,
+            to,
+            rustix::fs::AtFlags::empty(),
+        ) {
+            Ok(()) => {
+                let _ = rustix::fs::unlinkat(rustix::fs::CWD, from, rustix::fs::AtFlags::empty());
+                return Ok(());
+            }
+            Err(rustix::io::Errno::EXIST) => return Err(rustix::io::Errno::EXIST),
+            Err(
+                rustix::io::Errno::OPNOTSUPP
+                | rustix::io::Errno::NOSYS
+                | rustix::io::Errno::PERM
+                | rustix::io::Errno::XDEV,
+            ) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    match rustix::fs::statat(rustix::fs::CWD, to, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => Err(rustix::io::Errno::EXIST),
+        Err(rustix::io::Errno::NOENT) => rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            from,
+            rustix::fs::CWD,
+            to,
+            rustix::fs::RenameFlags::empty(),
+        ),
+        Err(error) => Err(error),
+    }
+}
+
 fn io_error(error: impl std::fmt::Display) -> glib::Error {
     glib::Error::new(gio::IOErrorEnum::Failed, &error.to_string())
 }
@@ -2634,18 +2689,11 @@ async fn publish_staged_replacement(
     target_path: PathBuf,
 ) -> Result<(), glib::Error> {
     let staged_path = staged.path().to_owned();
-    let renamed = gio::spawn_blocking(move || {
-        rustix::fs::renameat_with(
-            rustix::fs::CWD,
-            &staged_path,
-            rustix::fs::CWD,
-            &target_path,
-            rustix::fs::RenameFlags::NOREPLACE,
-        )
-    })
-    .await
-    .map_err(|_| io_error("The replacement worker stopped unexpectedly"))
-    .and_then(|result| result.map_err(io_error));
+    let renamed =
+        gio::spawn_blocking(move || commit_staged_without_replace(&staged_path, &target_path))
+            .await
+            .map_err(|_| io_error("The replacement worker stopped unexpectedly"))
+            .and_then(|result| result.map_err(io_error));
     match renamed {
         Ok(()) => {
             let _kept = staged.keep();
