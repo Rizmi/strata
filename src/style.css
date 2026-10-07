@@ -5936,6 +5936,20 @@ two-column presentation. */
   opacity: 0.45;
 }
 
+.settings-exclusions-list {
+  background: @strata_bg;
+  border: 1px solid alpha(@strata_border, 0.55);
+  border-radius: 8px;
+}
+
+.settings-exclusion-row {
+  padding: 6px 8px;
+}
+
+.settings-exclusion-row + .settings-exclusion-row {
+  border-top: 1px solid alpha(@strata_border, 0.35);
+}
+
 .settings-choice {
   min-width: 186px;
 }

@@ -229,9 +229,11 @@ format changes live, just like lists and previews.
 
 ## Global search exclusions
 
-In **Settings → General → Search & filtering → Global search exclusions**, use
-**Manage** to add or remove folder names and absolute directory paths. Folder
-names match case-insensitively anywhere in the tree; directory paths are
+In **Settings → General → Search & filtering → Global search exclusions**, enter
+a folder name or absolute directory path and press **Enter** or **Add**, or use
+**Browse…** to select a directory. The scrollable list below the form shows saved
+exclusions, with a remove button for each. Folder names match case-insensitively
+anywhere in the tree; directory paths are
 case-sensitive and exclude only that subtree. `~/` expands to home. Folder names
 are literal, not glob patterns. Built-in tool/cache exclusions remain in effect.
 Rules are stored as `search_exclusions`; invalid saved rules are ignored. Root,

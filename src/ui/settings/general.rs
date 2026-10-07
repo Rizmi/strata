@@ -297,23 +297,14 @@ fn append_browsing_options(content: &gtk::Box, manager: &Rc<PreferenceManager>) 
 }
 
 fn append_search_exclusions_option(content: &gtk::Box, manager: &Rc<PreferenceManager>) {
-    let manage = gtk::Button::with_label("Manage");
-    manage.set_valign(gtk::Align::Center);
-    manage.add_css_class("form-control");
-    manage.add_css_class("settings-choice");
-    super::super::accessibility::set_label(&manage, "Global search exclusions");
-
-    let manager_for_click = manager.clone();
-    manage.connect_clicked(move |button| {
-        super::exclusions::show_search_exclusions_dialog(button, &manager_for_click);
-    });
-
+    let editor = super::exclusions::search_exclusions_control(manager);
     let row = super::control_row(
         "Global search exclusions",
-        "Folders and directories excluded from search.",
-        &manage,
+        "Exclude folder names or directory paths from global search.",
+        &editor,
     );
-    super::search::tag(&row, "Global search exclusions");
+    row.add_css_class("settings-exclusions-row");
+    row.set_orientation(gtk::Orientation::Vertical);
     content.append(&row);
 }
 

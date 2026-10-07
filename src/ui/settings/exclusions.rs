@@ -2,14 +2,13 @@
 
 use std::rc::Rc;
 
-use gtk::{gio, glib, prelude::*};
+use gtk::{gio, prelude::*};
 
 use crate::{
     assets::icons,
     services::SearchExclusions,
     ui::{
-        controls::{form_entry, form_error_label, form_label, modal_layout, set_form_field_error},
-        modal::{ModalHost, dismiss_modal_layer, modal_layer},
+        controls::{form_entry, form_error_label, set_form_field_error},
         preferences::PreferenceManager,
     },
 };
@@ -17,41 +16,22 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-pub(super) fn show_search_exclusions_dialog(
-    parent: &impl IsA<gtk::Widget>,
-    manager: &Rc<PreferenceManager>,
-) {
-    let Some(ModalHost {
-        overlay: window_overlay,
-        blurred_root,
-    }) = ModalHost::blurred_for(parent)
-    else {
-        return;
-    };
-
-    let layout = modal_layout(
-        icons::SEARCH,
-        "Global search exclusions",
-        "Folders and directories excluded from search",
-        "Done",
-    );
-    layout.content.add_css_class("wide");
-
-    let field_label = form_label("Exclude folder name or directory path");
+pub(super) fn search_exclusions_control(manager: &Rc<PreferenceManager>) -> gtk::Box {
+    let control = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    control.set_hexpand(true);
     let field = form_entry();
     field.set_hexpand(true);
+    field.set_width_chars(1);
     field.set_placeholder_text(Some("Folder name (e.g. .venv) or ~/path…"));
     super::super::accessibility::set_label(&field, "Search exclusion");
 
     let browse_btn = gtk::Button::with_label("Browse…");
-    browse_btn.add_css_class("action-dialog-cancel");
+    browse_btn.add_css_class("settings-action-button");
     browse_btn.set_valign(gtk::Align::Fill);
-    browse_btn.set_size_request(84, -1);
 
     let add_btn = gtk::Button::with_label("Add");
-    add_btn.add_css_class("action-dialog-confirm");
+    add_btn.add_css_class("settings-action-button");
     add_btn.set_valign(gtk::Align::Fill);
-    add_btn.set_size_request(84, -1);
 
     let buttons_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons_box.set_homogeneous(true);
@@ -64,23 +44,20 @@ pub(super) fn show_search_exclusions_dialog(
 
     let error_label = form_error_label();
 
-    layout.body.append(&field_label);
-    layout.body.append(&input_row);
-    layout.body.append(&error_label);
+    control.append(&input_row);
+    control.append(&error_label);
 
-    let exclusions_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    exclusions_box.add_css_class("transfer-suggestions");
+    let exclusions_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
 
     let list_scroll = gtk::ScrolledWindow::builder()
         .child(&exclusions_box)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_height(160)
-        .max_content_height(240)
+        .max_content_height(180)
         .propagate_natural_height(true)
         .build();
-    list_scroll.add_css_class("transfer-suggestion-scroll");
-    layout.body.append(&list_scroll);
+    list_scroll.add_css_class("settings-exclusions-list");
+    control.append(&list_scroll);
 
     let weak_manager = Rc::downgrade(manager);
     manager.bind_preference(
@@ -166,42 +143,7 @@ pub(super) fn show_search_exclusions_dialog(
         });
     });
 
-    let content = layout.content;
-    let close = layout.close;
-    let cancel = layout.cancel;
-    let confirm = layout.confirm;
-    cancel.set_visible(false);
-
-    let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
-    window_overlay.add_overlay(&layer);
-
-    for button in [&close, &confirm] {
-        let weak_layer = layer.downgrade();
-        let weak_overlay = window_overlay.downgrade();
-        let weak_root = blurred_root.as_ref().map(|root| root.downgrade());
-        button.connect_clicked(move |_| {
-            if let (Some(layer), Some(overlay)) = (weak_layer.upgrade(), weak_overlay.upgrade()) {
-                let root = weak_root.as_ref().and_then(|root| root.upgrade());
-                dismiss_modal_layer(&layer, &overlay, root.as_ref());
-            }
-        });
-    }
-
-    let esc_confirm = confirm.downgrade();
-    let key_controller = gtk::EventControllerKey::new();
-    key_controller.connect_key_pressed(move |_, key, _, _| {
-        if key == gtk::gdk::Key::Escape {
-            if let Some(confirm) = esc_confirm.upgrade() {
-                confirm.emit_clicked();
-            }
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
-        }
-    });
-    layer.add_controller(key_controller);
-
-    field.grab_focus();
+    control
 }
 
 fn render_exclusion_rows(
@@ -216,7 +158,8 @@ fn render_exclusion_rows(
         let empty = gtk::Label::new(Some(
             "No custom exclusions added. Common tool caches (.venv, node_modules, target, etc.) are excluded automatically.",
         ));
-        empty.add_css_class("transfer-suggestions-empty");
+        empty.add_css_class("settings-option-description");
+        empty.add_css_class("settings-exclusion-row");
         empty.set_xalign(0.0);
         empty.set_wrap(true);
         container.append(&empty);
@@ -224,7 +167,7 @@ fn render_exclusion_rows(
     }
     for item in exclusions {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-        row.add_css_class("transfer-suggestion");
+        row.add_css_class("settings-exclusion-row");
         row.append(&crate::assets::primary_icon(icons::FOLDER, 16));
 
         let name_label = gtk::Label::new(Some(&item));
@@ -235,12 +178,13 @@ fn render_exclusion_rows(
 
         let is_path = SearchExclusions::is_directory_path(&item);
         let type_label = gtk::Label::new(Some(if is_path { "Directory" } else { "Folder name" }));
-        type_label.add_css_class("transfer-suggestion-parent");
+        type_label.add_css_class("settings-option-description");
         type_label.set_xalign(1.0);
         row.append(&type_label);
 
         let remove = gtk::Button::new();
-        remove.add_css_class("action-dialog-close");
+        remove.add_css_class("settings-action-button");
+        remove.add_css_class("settings-action-icon-button");
         remove.set_valign(gtk::Align::Center);
         remove.set_tooltip_text(Some("Remove exclusion"));
         remove.set_child(Some(&crate::assets::primary_icon(icons::X, 14)));

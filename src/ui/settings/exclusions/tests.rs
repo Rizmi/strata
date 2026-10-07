@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::test_support::gtk_test;
+use gtk::glib;
 
 #[test]
 fn validation_rejects_ambiguous_paths_and_equivalent_duplicates() {
@@ -81,21 +82,19 @@ fn label(root: &gtk::Widget, text: &str) -> Option<gtk::Label> {
 }
 
 #[test]
-fn dialogs_synchronize_add_remove_preserve_drafts_and_release_on_close() {
+fn inline_editors_synchronize_add_remove_preserve_drafts_and_release() {
     gtk_test(
-        "ui::settings::exclusions::tests::dialogs_synchronize_add_remove_preserve_drafts_and_release_on_close",
+        "ui::settings::exclusions::tests::inline_editors_synchronize_add_remove_preserve_drafts_and_release",
         || {
             PreferenceManager::seed_saved_preferences_for_test();
             let manager = PreferenceManager::shared();
             let themes = crate::ui::theme::ThemeManager::shared();
             let windows: Vec<_> = (0..2)
                 .map(|_| {
-                    let overlay = gtk::Overlay::new();
-                    overlay.set_child(Some(&gtk::Box::new(gtk::Orientation::Vertical, 0)));
-                    let window = gtk::Window::builder().child(&overlay).build();
+                    let editor = search_exclusions_control(&manager);
+                    let window = gtk::Window::builder().child(&editor).build();
                     window.present();
-                    show_search_exclusions_dialog(&overlay, &manager);
-                    (window, overlay)
+                    (window, editor)
                 })
                 .collect();
             let first = windows[0].1.upcast_ref::<gtk::Widget>();
@@ -104,8 +103,8 @@ fn dialogs_synchronize_add_remove_preserve_drafts_and_release_on_close() {
             assert!(label(second, ".venv").is_some());
             let entries: Vec<_> = windows
                 .iter()
-                .map(|(_, overlay)| {
-                    descendants(overlay.upcast_ref())
+                .map(|(_, editor)| {
+                    descendants(editor.upcast_ref())
                         .into_iter()
                         .find_map(|widget| widget.downcast::<gtk::Entry>().ok())
                         .expect("exclusion entry")
@@ -144,20 +143,22 @@ fn dialogs_synchronize_add_remove_preserve_drafts_and_release_on_close() {
             drop(row);
             let weak_entries: Vec<_> = entries.iter().map(|entry| entry.downgrade()).collect();
             drop(entries);
-            button(first, "Done").emit_clicked();
-            button(second, "Done").emit_clicked();
+            for (window, _) in windows {
+                window.set_child(gtk::Widget::NONE);
+                window.destroy();
+            }
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while weak_entries.iter().any(|entry| entry.upgrade().is_some()) {
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "dialog retained its entries after dismissal"
+                    "inline editor retained its entries after destruction"
                 );
                 glib::MainContext::default().iteration(false);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            for (window, _) in windows {
-                window.destroy();
-            }
+            let rebuilt = search_exclusions_control(&manager);
+            assert!(label(rebuilt.upcast_ref(), ".venv").is_some());
+            assert!(label(rebuilt.upcast_ref(), "private-build").is_none());
             drop(themes);
         },
     );
