@@ -37,6 +37,47 @@ pub(crate) fn uri_contains_credentials(uri: &gio::glib::Uri) -> bool {
         || uri.user().is_some_and(|user| user.contains([':', ';']))
 }
 
+pub(crate) fn transfer_file_name(file: &gio::File) -> Option<OsString> {
+    let basename = file.basename()?.into_os_string();
+    if !file
+        .parent()
+        .is_some_and(|parent| parent.uri().as_str() == "trash:///")
+    {
+        return Some(basename);
+    }
+    let bytes = basename.as_bytes();
+    // GVfs prefixes escaped home names with `; external names encode a file URI's path.
+    if bytes.starts_with(b"`\\") || bytes.starts_with(b"``") {
+        return Some(OsStr::from_bytes(&bytes[1..]).to_os_string());
+    }
+    if !bytes.starts_with(b"\\") {
+        return Some(basename);
+    }
+    let mut leaf = Vec::new();
+    let mut escaped = false;
+    for &byte in bytes {
+        if escaped {
+            leaf.push(byte);
+            escaped = false;
+        } else if byte == b'`' {
+            escaped = true;
+        } else if byte == b'\\' {
+            leaf.clear();
+        } else {
+            leaf.push(byte);
+        }
+    }
+    if escaped {
+        return None;
+    }
+    let leaf = gio::glib::Uri::unescape_bytes(std::str::from_utf8(&leaf).ok()?, Some("/")).ok()?;
+    let bytes = leaf.as_ref();
+    if bytes.is_empty() || bytes.contains(&0) || bytes == b"." || bytes == b".." {
+        return None;
+    }
+    Some(OsStr::from_bytes(bytes).to_os_string())
+}
+
 fn uri_scheme_eq(uri: &str, scheme: &str) -> bool {
     gio::glib::Uri::parse_scheme(uri).is_some_and(|parsed| parsed.eq_ignore_ascii_case(scheme))
 }
@@ -154,22 +195,8 @@ impl Location {
     pub fn file_name(&self) -> Option<OsString> {
         match &self.kind {
             LocationKind::Native(path) => path.file_name().map(OsString::from),
-            LocationKind::Uri(uri) => {
-                let file = gio::File::for_uri(uri);
-                let basename = file.basename()?;
-                if uri.starts_with("trash:") {
-                    let bytes = basename.as_os_str().as_bytes();
-                    if (bytes.starts_with(b"\\") || bytes.windows(8).any(|w| w == b"\\.Trash-"))
-                        && let Some(pos) = bytes.iter().rposition(|&b| b == b'\\')
-                    {
-                        let leaf = &bytes[pos + 1..];
-                        if !leaf.is_empty() {
-                            return Some(OsStr::from_bytes(leaf).to_os_string());
-                        }
-                    }
-                }
-                basename.file_name().map(OsString::from)
-            }
+            LocationKind::Uri(uri) => transfer_file_name(&gio::File::for_uri(uri))
+                .and_then(|name| Path::new(&name).file_name().map(OsString::from)),
         }
     }
 

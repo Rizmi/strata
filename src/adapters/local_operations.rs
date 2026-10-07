@@ -998,19 +998,7 @@ fn transfer_is_noop(source: &gio::File, destination: &gio::File, target: &gio::F
 }
 
 pub(crate) fn transfer_source_name(source: &gio::File) -> Option<OsString> {
-    let name = source.basename()?;
-    if source.uri().starts_with("trash:") {
-        let bytes = name.as_os_str().as_bytes();
-        if (bytes.starts_with(b"\\") || bytes.windows(8).any(|w| w == b"\\.Trash-"))
-            && let Some(pos) = bytes.iter().rposition(|&b| b == b'\\')
-        {
-            let leaf = &bytes[pos + 1..];
-            if !leaf.is_empty() {
-                return Some(OsStr::from_bytes(leaf).to_os_string());
-            }
-        }
-    }
-    Some(name.into_os_string())
+    crate::model::transfer_file_name(source)
 }
 
 fn default_transfer_target(

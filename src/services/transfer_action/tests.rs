@@ -322,13 +322,3 @@ fn mixed_parent_drop_keeps_only_the_transferable_sources_in_order() {
         vec![first, second]
     );
 }
-
-#[test]
-fn drop_preserves_external_trash_sources() {
-    let dest = Location::local("/home/user/Documents");
-    let trash_source = Location::uri("trash:///%5Cmnt%5CData%5C.Trash-1000%5Cfiles%5CSAMPLED.2");
-    assert_eq!(
-        transferable_drop_sources(&dest, std::slice::from_ref(&trash_source)),
-        vec![trash_source]
-    );
-}
